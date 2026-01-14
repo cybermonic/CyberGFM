@@ -32,7 +32,7 @@ WARMUP_E = 9.6  # Epochs
 EPOCHS = 32    # Epochs
 LR = 3e-4
 
-HOME = 'results/ft/'
+HOME = 'results/cls/'
 
 WALK_LEN = 4
 NUM_EVAL_ITERS = 1
@@ -492,10 +492,10 @@ if __name__ == '__main__':
     # Otherwise, it's inferred from args
     else: 
         if args.trw: 
-            sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
+            sd = torch.load(f'pretrained/temporal/{DATASET}/trw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
             OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
         else: 
-            sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
+            sd = torch.load(f'pretrained/static/{DATASET}/rw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
             OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
 
     va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)

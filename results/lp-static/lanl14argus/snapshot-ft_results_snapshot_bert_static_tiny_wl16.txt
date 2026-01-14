@@ -1,0 +1,1 @@
+epoch,updates,auc,ap,val_auc,val_ap

@@ -245,7 +245,7 @@ if __name__ == '__main__':
     WORKERS = 16
     EVAL_EVERY = 1000
 
-    HOME = f'results/{"trw" if args.trw else "rw"}/'
+    HOME = f'results/lp-{"temporal" if args.trw else "static"}/'
 
     edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus
 
@@ -270,9 +270,9 @@ if __name__ == '__main__':
         # Otherwise, it's inferred from args
         else:
             if args.trw:
-                sd = torch.load(f'pretrained/snapshot_rw/{DATASET}/trw_bert_{DATASET}_{SIZE}{"-best" if args.best else ""}.pt', weights_only=True)
+                sd = torch.load(f'pretrained/temporal/{DATASET}/trw_bert_{DATASET}_{SIZE}{"-best" if args.best else ""}.pt', weights_only=True)
             else:
-                sd = torch.load(f'pretrained/rw_sampling/{DATASET}/rw_bert_{DATASET}_{SIZE}{"-best" if args.best else ""}.pt', weights_only=True)
+                sd = torch.load(f'pretrained/static/{DATASET}/rw_bert_{DATASET}_{SIZE}{"-best" if args.best else ""}.pt', weights_only=True)
 
     FNAME = (
         f'{"rand_init_" if args.from_random else ""}' +
