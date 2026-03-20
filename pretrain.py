@@ -12,6 +12,7 @@ from transformers import BertConfig
 from eval_trw import Evaluator
 from models.gnn_bert import RWBert as BERT, GNNEmbedding
 from sampler import RWSampler, TRWSampler
+from poison_datasets import poison
 from tokenizer import RWTokenizer
 from utils import reindex
 
@@ -164,6 +165,7 @@ if __name__ == '__main__':
     arg.add_argument('--tr-size', type=float, default=1.)
     arg.add_argument('--log-out', default='.')
     arg.add_argument('--n-tokens', default=0, type=int)
+    arg.add_argument('--poison', default=0, type=int)
     args = arg.parse_args()
 
     print(args)
@@ -181,7 +183,7 @@ if __name__ == '__main__':
 
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw \
         else 'lanl14argus' if args.argus else 'unknown'
-        
+
     MINI_BS = params.MINI_BS
 
     edge_features = args.unsw or args.argus
@@ -190,11 +192,27 @@ if __name__ == '__main__':
     if DATASET == 'optc':
         MINI_BS = 1035
 
+    if args.argus:
+        WALK_LEN = 4
+        MINI_BS = 512
+
     if args.argus and args.trw:
         MINI_BS = 128
 
-    # For training set size ablation study
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
+
+    # Data poisoning ablation
+    if args.poison != 0:
+        if args.poison > 100 or args.poison < 0:
+            print("Please only provide values for --poison in the range (0,100]")
+            exit()
+        else:
+            print(f"Injecting {args.poison}% of malicious edges")
+
+        te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
+        tr = poison(tr.cpu(),te.cpu(),args.poison,  edge_features, DATASET)
+
+    # Training set size ablation study
     if args.tr_size != 1:
         if not os.path.exists(f'subsets/{DATASET}.pt'):
             perturb = torch.randperm(tr.col.size(0))
@@ -258,7 +276,7 @@ if __name__ == '__main__':
 
         if SIZE == 'mini':
             EVAL_BS = 256
-        
+
         WORKERS = 16
         EVAL_EVERY = 14
 
@@ -300,6 +318,9 @@ if __name__ == '__main__':
     OUT_F = f'rw_bert_{DATASET}'
     if args.trw:
         OUT_F = 't'+OUT_F
+
+    if args.poison:
+        OUT_F += f'_{args.poison}poisoned'
 
     if args.n_tokens:
         TOTAL_T = int(args.n_tokens) * 1e8

@@ -19,6 +19,7 @@ from tqdm import tqdm
 from eval_trw import Evaluator
 from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBert, GNNEmbedding
+from poison_datasets import poison
 from sampler import TRWSampler as TRW, RWSampler as RW
 from utils import reindex
 
@@ -79,7 +80,7 @@ def train(tr,va,te, model: RWBert):
     sched = Scheduler(opt, warmup_stop, total_steps)
 
     if not SPEEDTEST:
-        with open(f'{HOME}/{DATASET}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
+        with open(f'{OUT_DIR}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'w+') as f:
             f.write(f'epoch,updates,auc,ap,val_auc,val_ap\n')
 
             if not (args.from_random or args.special):
@@ -177,7 +178,7 @@ def train(tr,va,te, model: RWBert):
             best = va_ap
             best_te = (te_auc, te_ap, va_auc, va_ap, e)
 
-        with open(f'{HOME}/{DATASET}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
+        with open(f'{OUT_DIR}/snapshot-ft_results_{FNAME}_{SIZE}_wl{WALK_LEN}.txt', 'a') as f:
             f.write(f'{e+1},{updates},{te_auc},{te_ap},{va_auc},{va_ap}\n')
 
         auc, ap, va_auc, va_ap, _ = best_te
@@ -234,6 +235,7 @@ if __name__ == '__main__':
     arg.add_argument('--tag', default='')
     arg.add_argument('--special', action='store_true')
     arg.add_argument('--out-dir', default='')
+    arg.add_argument('--poison', default=0, type=int)
     args = arg.parse_args()
     print(args)
 
@@ -246,8 +248,9 @@ if __name__ == '__main__':
     EVAL_EVERY = 1000
 
     HOME = f'results/lp-{"temporal" if args.trw else "static"}/'
+    OUT_DIR = f'{HOME}/{DATASET}' if not args.out_dir else args.out_dir
 
-    edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus
+    edge_features = args.unsw or args.argus
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
@@ -281,11 +284,21 @@ if __name__ == '__main__':
     print(FNAME)
 
     TRWSampler = TRW if args.trw else RW
-
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
 
     # For training set size ablation study
-    tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
+    # Data poisoning ablation
+    if args.poison != 0:
+        if args.poison > 100 or args.poison < 0:
+            print("Please only provide values for --poison in the range (0,100]")
+            exit()
+        else:
+            print(f"Injecting {args.poison}% of malicious edges")
+
+        te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
+        tr = poison(tr.cpu(),te.cpu(),args.poison,  edge_features, DATASET)
+
+
     if args.tr_size != 1:
         HOME = 'results/training_data_ablation/'
         FNAME += f'_{args.tr_size:0.4f}pct'

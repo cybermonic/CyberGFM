@@ -7,3 +7,4 @@ subsets/
 log.txt
 /rw_bert*
 /trw_bert*
+.vscode/

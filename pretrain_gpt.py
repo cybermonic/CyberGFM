@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-import os 
+import os
 from random import choice, shuffle
 import time
 from types import SimpleNamespace
@@ -9,8 +9,9 @@ from torch.optim.adamw import AdamW
 from torch.optim.lr_scheduler import LRScheduler
 
 from eval_trw import CausalEvaluator
-from models.hugging_gpt import GPT 
+from models.hugging_gpt import GPT
 from models.gnn_bert import GNNEmbedding
+from poison_datasets import poison
 from rw_sampler import RWSampler, TRWSampler
 from transformers import OpenAIGPTConfig
 from tokenizer import RWTokenizer
@@ -36,7 +37,7 @@ class Scheduler(LRScheduler):
         # Linear decay after that
         else:
             coeff = max(1e-8, 1 - ((self.last_epoch-WARMUP_T)/(TOTAL_T-WARMUP_T)))
-                     
+
             return [group['initial_lr'] * coeff
                     for group in self.optimizer.param_groups]
 
@@ -83,10 +84,10 @@ def train(g: RWSampler, model: GPT):
 
             if steps * MINI_BS >= BS:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
-                
+
                 opt_st = time.time()
                 opt.step()
-                opt_en = time.time() - opt_st 
+                opt_en = time.time() - opt_st
                 sched.step()
 
                 processed_tokens += tokens
@@ -116,12 +117,12 @@ def train(g: RWSampler, model: GPT):
             if processed_tokens >= TOTAL_T:
                 break
 
-        if SPEEDTEST: 
-            exit() 
-            
+        if SPEEDTEST:
+            exit()
+
         e += 1
         with torch.no_grad():
-            if e % EVAL_EVERY == 0: 
+            if e % EVAL_EVERY == 0:
                 torch.cuda.empty_cache()
                 model.eval()
                 te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g, va, te, model)
@@ -159,6 +160,7 @@ if __name__ == '__main__':
     arg.add_argument('--lanl14argus', action='store_true')
     arg.add_argument('--log-out', default='.')
     arg.add_argument('--n-tokens', default=0, type=int)
+    arg.add_argument('--poison', default=0, type=int)
     args = arg.parse_args()
 
     print(args)
@@ -166,7 +168,7 @@ if __name__ == '__main__':
     LOG_OUT = args.log_out
     SIZE = args.size
     DEVICE = args.device if args.device >= 0 else 'cpu'
-    
+
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
         'mini': SimpleNamespace(H=256, L=4, MINI_BS=1024),
@@ -179,26 +181,28 @@ if __name__ == '__main__':
         else 'lanl14argus' if (args.argus or args.lanl14argus) else 'lanl'
     MINI_BS = params.MINI_BS
 
-    edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus 
+    edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus
     print(DATASET)
 
-    if DATASET == 'optc': 
+    if DATASET == 'optc':
         MINI_BS = 1035
 
-    if DATASET == 'lanl14attr' or args.lanlcomp or args.argus: 
-        WALK_LEN = 8 
+    if DATASET == 'lanl14attr' or args.lanlcomp or args.argus:
+        WALK_LEN = 8
         MINI_BS = 256
 
-    if args.argus and args.trw: 
+    if args.argus and args.trw:
         MINI_BS = 128
 
-    # For training set size ablation study
+
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
-    if args.tr_size != 1: 
-        if not os.path.exists(f'subsets/{DATASET}.pt'): 
+
+    # Training set size ablation study
+    if args.tr_size != 1:
+        if not os.path.exists(f'subsets/{DATASET}.pt'):
             perturb = torch.randperm(tr.col.size(0))
             torch.save(perturb, f'subsets/{DATASET}.pt')
-        else: 
+        else:
             perturb = torch.load(f'subsets/{DATASET}.pt', weights_only=True)
 
         perturb = perturb[: int(perturb.size(0) * args.tr_size)]
@@ -215,10 +219,10 @@ if __name__ == '__main__':
         tr.idxptr = reindex(tr.src, tr.x.size(0))
         print(f"{tr.col.size(0)} edges")
 
-        if 'edge_attr' in tr.keys(): 
+        if 'edge_attr' in tr.keys():
             tr.edge_attr = tr.edge_attr[to_keep]
 
-    if args.trw: 
+    if args.trw:
         g = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
 
         va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
@@ -229,7 +233,7 @@ if __name__ == '__main__':
         label = te.label
         te = TRWSampler(te, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
         te.label = label
-    else: 
+    else:
         g = RWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
 
         va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
@@ -244,30 +248,30 @@ if __name__ == '__main__':
     CHECKPOINT = 1000
     WORKERS = 1
     EVAL_BS = 512
-    DOWNSAMPLE = False 
+    DOWNSAMPLE = False
 
     if DATASET.startswith('lanl'):
         WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
         TOTAL_T = 10 ** 9           #(originally 10**10)
         DELTA = 60*60*24 # 1 day
 
-        if DATASET == 'lanl': 
+        if DATASET == 'lanl':
             SNAPSHOTS = list(range(59))
             WORKERS = 2
-        elif args.argus: 
+        elif args.argus:
             SNAPSHOTS = tr.ts.unique().tolist()
 
-        else: 
+        else:
             SNAPSHOTS = list(range(14))
 
-        if SIZE == 'med': 
+        if SIZE == 'med':
             EVAL_BS = 128
             tr.batch_size = MINI_BS
 
-        if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr' or args.argus: 
+        if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr' or args.argus:
             WORKERS = 16
-            EVAL_EVERY = 14 
-       
+            EVAL_EVERY = 14
+
 
     elif DATASET == 'unsw':
         WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
@@ -286,15 +290,15 @@ if __name__ == '__main__':
     elif DATASET == 'optc':
         WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
         TOTAL_T = 10 ** 8
-        
+
         DELTA = 60*60*24 if args.delta == -1 else args.delta
         SNAPSHOTS = (tr.ts // DELTA).unique(sorted=True).tolist()#[:5]
         CHECKPOINT = len(SNAPSHOTS)
         WORKERS = 16
         EVAL_BS = 2048*2
-        EVAL_EVERY = 50 
+        EVAL_EVERY = 50
 
-        if SIZE == 'med': 
+        if SIZE == 'med':
             EVAL_BS = 2048
         #    WORKERS = 1
         #DOWNSAMPLE = 0.1
@@ -303,12 +307,12 @@ if __name__ == '__main__':
         print(f"Unrecognized dataset: {DATASET}")
 
     OUT_F = f'rw_gpt_{DATASET}'
-    if args.trw: 
+    if args.trw:
         OUT_F = 't'+OUT_F
 
-    if args.n_tokens: 
+    if args.n_tokens:
         TOTAL_T = int(args.n_tokens) * 1e8
-        WARMUP_T = TOTAL_T // 10 
+        WARMUP_T = TOTAL_T // 10
 
     print(OUT_F)
     print("Walk len", WALK_LEN)

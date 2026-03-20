@@ -1,6 +1,6 @@
 from argparse import ArgumentParser
 from copy import deepcopy
-import os 
+import os
 import time
 from types import SimpleNamespace
 
@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBertFT, GNNEmbedding
-from sampler import TRWSampler as TRW, RWSampler as RW 
+from sampler import TRWSampler as TRW, RWSampler as RW
 from utils import reindex
 
 #from prior_works.argus_test import APLoss
@@ -39,7 +39,7 @@ NUM_EVAL_ITERS = 1
 MINI_BS = 512
 BS = 1024
 EVAL_BS = 1024
-EVAL_EVERY = 250 
+EVAL_EVERY = 250
 T_MAX = 100_000 # From alibaba source code
 
 class Scheduler(LRScheduler):
@@ -61,15 +61,15 @@ class Scheduler(LRScheduler):
             return [group['initial_lr'] * (1 - ((self.last_epoch-self.warmup_stop)/(self.total_steps-self.warmup_stop)))
                     for group in self.optimizer.param_groups]
 
-def sample_bi(tr, src,dst,ts, walk_len, edge_features=None): 
+def sample_bi(tr, src,dst,ts, walk_len, edge_features=None):
     ts = ts.long()
     if walk_len > 0:
         rw_src = tr.rw(src, max_ts=ts, min_ts=(ts-DELTA).clamp(0), reverse=True, trim_missing=False)
         rw_dst = tr.rw(dst, max_ts=(ts+DELTA), min_ts=ts, trim_missing=False)
-        
-        if edge_features is not None: 
+
+        if edge_features is not None:
             rw = torch.cat([rw_src, edge_features, rw_dst], dim=1)
-        else: 
+        else:
             rw = torch.cat([rw_src, rw_dst], dim=1)
 
     else:
@@ -200,7 +200,7 @@ def parallel_validate(model, tr, va, workers=16, percent=1):
 
         # Sigmoid on logits to prevent squishing high scores on high-dim vector
         pred = 1 - torch.sigmoid(out)
-        
+
         tps[b.cpu()] += pred.squeeze().detach().to('cpu').numpy()
         prog.update()
 
@@ -286,7 +286,7 @@ def train(tr,va,te, model: RWBertFT):
     sched = Scheduler(opt, warmup_stop, total_steps)
 
     model.eval()
-    
+
     if not SPEEDTEST:
         best_te = (te_auc, te_ap, va_auc, va_ap) = get_metrics(tr,va,te, model)
         best = va_ap
@@ -318,7 +318,7 @@ def train(tr,va,te, model: RWBertFT):
             neg_src = torch.randint_like(src, tr.num_nodes)
             neg_dst = torch.randint_like(dst, tr.num_nodes)
             neg_ts = torch.randint_like(ts, tr.ts.max())
-            if ef is not None: 
+            if ef is not None:
                 idx = torch.randint(0, tr.edge_attr.size(0), (neg_ts.size(0),), device=tr.edge_attr.device)
                 neg_ef = tr.edge_attr[idx] + tr.num_nodes
                 ef = torch.cat([ef, neg_ef])
@@ -328,7 +328,7 @@ def train(tr,va,te, model: RWBertFT):
             ts = torch.cat([ts, neg_ts])
 
             labels = torch.zeros(src.size(), device=src.device)
-            labels[:labels.size(0) // 2] = 1 
+            labels[:labels.size(0) // 2] = 1
             labels = labels.unsqueeze(-1)
 
             model.train()
@@ -342,7 +342,7 @@ def train(tr,va,te, model: RWBertFT):
 
             #preds = model.predict(*args)
             #loss = APLoss(labels.size(0)//2).forward(preds, labels, torch.arange(labels.size(0)//2))
-            
+
             log_st = time.time()
             loss.backward()
             times['bwd'].append(time.time() - log_st)
@@ -350,8 +350,8 @@ def train(tr,va,te, model: RWBertFT):
             steps += 1
             if steps*MINI_BS == BS:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
-                
-                log_st = time.time() 
+
+                log_st = time.time()
                 opt.step()
                 times['step'].append(time.time() - log_st)
 
@@ -386,8 +386,8 @@ def train(tr,va,te, model: RWBertFT):
                 print(f"TEST: AUC: {auc:0.4f}, AP:  {ap:0.4f}")
             '''
 
-        if SPEEDTEST: 
-            import json 
+        if SPEEDTEST:
+            import json
             with open(f'latency/latency_{DATASET}_ft.json', 'w+') as f:
                 f.write(
                     json.dumps(times, indent=1)
@@ -426,6 +426,7 @@ if __name__ == '__main__':
     arg.add_argument('--model-fname', default='')
     arg.add_argument('--tr-size', type=float, default=1.)
     arg.add_argument('--tag', default='')
+    arg.add_argument('--out-dir', default='')
     args = arg.parse_args()
     print(args)
 
@@ -438,9 +439,9 @@ if __name__ == '__main__':
     DATASET = 'optc' if args.optc else 'unsw' if args.unsw \
             else 'lanl14argus' if args.argus else 'unknown'
     WORKERS = 16
-    COMPRESS = False 
+    COMPRESS = False
 
-    edge_features = args.unsw or args.lanlflows or args.argus 
+    edge_features = args.unsw or args.argus
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
@@ -454,18 +455,18 @@ if __name__ == '__main__':
 
     FNAME = 'snapshot_bert'
     RAND = '' if not args.from_random else 'rand_init_'
-    
-    if args.tr_size != 1: 
+
+    if args.tr_size != 1:
         HOME = 'results/training_data_ablation/'
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
-    if args.tr_size != 1: 
+    if args.tr_size != 1:
         HOME = 'results/training_data_ablation/'
         FNAME += f'_{args.tr_size:0.3f}pct'
-        
-        if not os.path.exists(f'subsets/{DATASET}.pt'): 
+
+        if not os.path.exists(f'subsets/{DATASET}.pt'):
             perturb = torch.randperm(tr.col.size(0))
-        else: 
+        else:
             perturb = torch.load(f'subsets/{DATASET}.pt', weights_only=True)
 
         perturb = perturb[: int(perturb.size(0) * args.tr_size)]
@@ -479,24 +480,25 @@ if __name__ == '__main__':
         tr.ts = tr.ts[to_keep]
         tr.idxptr = reindex(tr.src, tr.x.size(0))
 
-        if 'edge_attr' in tr.keys(): 
+        if 'edge_attr' in tr.keys():
             tr.edge_attr = tr.edge_attr[to_keep]
 
     TRWSampler = TRW if args.trw else RW
     tr = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
 
-    if args.model_fname: 
+    if args.model_fname:
         sd = torch.load(args.model_fname, weights_only=True)
-        OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
 
     # Otherwise, it's inferred from args
-    else: 
-        if args.trw: 
+    else:
+        if args.trw:
             sd = torch.load(f'pretrained/temporal/{DATASET}/trw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
-            OUT_F = f'{HOME}/{DATASET}/{RAND}rwft{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
-        else: 
+        else:
             sd = torch.load(f'pretrained/static/{DATASET}/rw_bert_{DATASET}_{SIZE}.pt', weights_only=True)
-            OUT_F = f'{HOME}/{DATASET}/{RAND}static{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
+
+    temporal_str = 'rwft' if args.trw else 'static'
+    OUT_DIR = f'{HOME}/{DATASET}' if args.out_dir is None else args.out_dir
+    OUT_F = f'{OUT_DIR}/{RAND}{temporal_str}{bi_fname}_results_{FNAME}_{SIZE}_wl{WALK_LEN}{args.tag}.txt'
 
     va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
     va = TRWSampler(va, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
@@ -510,7 +512,7 @@ if __name__ == '__main__':
     if DATASET.startswith('lanl'):
         DELTA = 60*60*24 # 1 day
         SNAPSHOTS = list(range(14))
-        EVAL_EVERY = 2000 # ~2 times per epoch 
+        EVAL_EVERY = 2000 # ~2 times per epoch
 
     elif DATASET == 'unsw':
         DELTA = 0
