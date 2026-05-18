@@ -25,7 +25,7 @@ from utils import reindex
 
 SPEEDTEST = False
 DEVICE = 0
-EPOCHS = 10    # Epochs
+EPOCHS = 5    # Epochs
 WARMUP_E = EPOCHS / 3.75 # Originally 36 and 9.6
 LR = 3e-4
 

@@ -19,6 +19,7 @@ from tqdm import tqdm
 
 from fast_auc import fast_auc, fast_ap
 from models.gnn_bert import RWBertFT, GNNEmbedding
+from poison_datasets import poison
 from sampler import TRWSampler as TRW, RWSampler as RW
 from utils import reindex
 
@@ -427,6 +428,7 @@ if __name__ == '__main__':
     arg.add_argument('--tr-size', type=float, default=1.)
     arg.add_argument('--tag', default='')
     arg.add_argument('--out-dir', default='')
+    arg.add_argument('--poison', default=0, type=int)
     args = arg.parse_args()
     print(args)
 
@@ -460,6 +462,17 @@ if __name__ == '__main__':
         HOME = 'results/training_data_ablation/'
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
+
+    if args.poison != 0:
+        if args.poison > 100 or args.poison < 0:
+            print("Please only provide values for --poison in the range (0,100]")
+            exit()
+        else:
+            print(f"Injecting {args.poison}% of malicious edges")
+
+        te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
+        tr = poison(tr.cpu(),te.cpu(),args.poison,  edge_features, DATASET)
+
     if args.tr_size != 1:
         HOME = 'results/training_data_ablation/'
         FNAME += f'_{args.tr_size:0.3f}pct'
