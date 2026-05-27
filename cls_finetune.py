@@ -429,6 +429,7 @@ if __name__ == '__main__':
     arg.add_argument('--tag', default='')
     arg.add_argument('--out-dir', default='')
     arg.add_argument('--poison', default=0, type=int)
+    arg.add_argument('--ignore-edge-feats', action='store_true')
     args = arg.parse_args()
     print(args)
 
@@ -443,7 +444,7 @@ if __name__ == '__main__':
     WORKERS = 16
     COMPRESS = False
 
-    edge_features = args.unsw or args.argus
+    edge_features = (args.unsw or args.argus) and not args.ignore_edge_feats
 
     params = {
         'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),

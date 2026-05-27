@@ -51,16 +51,15 @@ def build_tgraph():
 
     def get_or_add_bucketted(e):
         e = int(e)
-        if e < 10:
+        if e < 100:
             val = f'bkt-{e}'
         else:
             val = f'bkt-log(x)={int(log10(e))}'
 
         return get_or_add_e(val)
 
-    # Populate with default values 0-10, 0-100
-    [get_or_add_bucketted(i) for i in range(10)]
-    [get_or_add_e(i) for i in range(100)]
+    # Populate with default values 0-100, 0-100
+    [get_or_add_bucketted(i) for i in range(100)]
 
     def add_port(p):
         if p.startswith('0x'):
@@ -145,7 +144,7 @@ def build_tgraph():
         ts += t
         labels += label
         edge_attr += ea
-        raw_edge_attr += raw_ea 
+        raw_edge_attr += raw_ea
 
         idxptr.append(len(neighbors) + idxptr[-1])
         del csr[i]

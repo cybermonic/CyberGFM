@@ -166,6 +166,8 @@ if __name__ == '__main__':
     arg.add_argument('--log-out', default='.')
     arg.add_argument('--n-tokens', default=0, type=int)
     arg.add_argument('--poison', default=0, type=int)
+    arg.add_argument('--walk-len', default=None, type=int)
+    arg.add_argument('--ignore-edge-feats', action='store_true')
     args = arg.parse_args()
 
     print(args)
@@ -186,18 +188,20 @@ if __name__ == '__main__':
 
     MINI_BS = params.MINI_BS
 
-    edge_features = args.unsw or args.argus
+    edge_features = (args.unsw or args.argus) and not args.ignore_edge_feats
     print(DATASET)
 
     if DATASET == 'optc':
         MINI_BS = 1035
 
     if args.argus:
-        WALK_LEN = 4
-        MINI_BS = 512
+        WALK_LEN = 4 if not args.ignore_edge_feats else 64 # 64 tokens
+        MINI_BS = 512 if not args.ignore_edge_feats else 1024
 
     if args.argus and args.trw:
         MINI_BS = 128
+        if args.ignore_edge_feats:
+            MINI_BS = 1024
 
     tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
 
@@ -236,6 +240,9 @@ if __name__ == '__main__':
 
         if 'edge_attr' in tr.keys():
             tr.edge_attr = tr.edge_attr[to_keep]
+
+    if args.walk_len:
+        WALK_LEN = args.walk_len
 
     if args.trw:
         g = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
