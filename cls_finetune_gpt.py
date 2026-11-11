@@ -13,7 +13,7 @@ import math
 import torch
 from torch.optim import AdamW
 
-from common import (DAY, SIZES, ResultTracker, SpeedTimer, context, dataset_kind, evaluate,
+from common import (VAL_NEG, DAY, SIZES, ResultTracker, SpeedTimer, context, dataset_kind, evaluate,
                     load_eval_samplers, load_train_graph, make_sampler, random_edges, run_tag,
                     seed_everything, uses_edge_features, warmup_linear)
 from models.hugging_gpt import GPT_Cls, gpt_config
@@ -46,6 +46,8 @@ if __name__ == '__main__':
     ap.add_argument('--mini-bs', type=int)
     ap.add_argument('--eval-bs', type=int)
     ap.add_argument('--select-by', choices=['auc', 'ap'], default='auc')
+    ap.add_argument('--val-neg', choices=VAL_NEG, default='uniform',
+                    help='validation negatives (see common.evaluate);')
     ap.add_argument('--freeze', action='store_true', help='train only the classifier head')
     ap.add_argument('--from-random', action='store_true')
     ap.add_argument('--model-fname')
@@ -106,7 +108,7 @@ if __name__ == '__main__':
     def run_eval(epoch, updates):
         model.eval()
         torch.cuda.empty_cache()
-        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed))
+        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed, val_neg=args.val_neg))
 
     if not (args.from_random or args.speedtest):
         run_eval(0, 0)

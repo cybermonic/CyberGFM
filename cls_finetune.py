@@ -12,7 +12,7 @@ import math
 import torch
 from torch.optim import AdamW
 
-from common import (DAY, MASK, PAD, ResultTracker, SpeedTimer, bert_config, context, dataset_kind, evaluate, left_align,
+from common import (VAL_NEG, DAY, MASK, PAD, ResultTracker, SpeedTimer, bert_config, context, dataset_kind, evaluate, left_align,
                     load_eval_samplers, load_train_graph, make_sampler, pretrained_path,
                     random_edges, run_tag, seed_everything, uses_edge_features, warmup_linear)
 from models.gnn_bert import RWBertFT
@@ -48,6 +48,8 @@ if __name__ == '__main__':
     ap.add_argument('--mini-bs', type=int)
     ap.add_argument('--eval-bs', type=int)
     ap.add_argument('--select-by', choices=['auc', 'ap'], default='auc')
+    ap.add_argument('--val-neg', choices=VAL_NEG, default='uniform',
+                    help='validation negatives (see common.evaluate);')
     ap.add_argument('--from-random', action='store_true')
     ap.add_argument('--model-fname')
     ap.add_argument('--best-pretrained', action='store_true')
@@ -105,7 +107,7 @@ if __name__ == '__main__':
     def run_eval(epoch, updates):
         model.eval()
         torch.cuda.empty_cache()
-        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed))
+        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed, val_neg=args.val_neg))
 
     if not (args.from_random or args.speedtest):
         run_eval(0, 0)

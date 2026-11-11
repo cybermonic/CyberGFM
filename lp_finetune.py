@@ -13,7 +13,7 @@ import math
 import torch
 from torch.optim import AdamW
 
-from common import (DAY, HOUR, ResultTracker, SpeedTimer, bert_config, dataset_kind, evaluate, lp_inputs,
+from common import (VAL_NEG, DAY, HOUR, ResultTracker, SpeedTimer, bert_config, dataset_kind, evaluate, lp_inputs,
                     load_eval_samplers, load_train_graph, make_lp_scorer, make_sampler,
                     pretrained_path, run_tag, seed_everything, uses_edge_features, warmup_linear)
 from models.gnn_bert import RWBert
@@ -56,6 +56,8 @@ if __name__ == '__main__':
     ap.add_argument('--mini-bs', type=int)
     ap.add_argument('--eval-bs', type=int)
     ap.add_argument('--select-by', choices=['auc', 'ap'], default='auc')
+    ap.add_argument('--val-neg', choices=VAL_NEG, default='uniform',
+                    help='validation negatives (see common.evaluate);')
     ap.add_argument('--score', choices=['sigmoid', 'nll'], default='sigmoid')
     ap.add_argument('--from-random', action='store_true')
     ap.add_argument('--model-fname', help='default: pretrained/{static,temporal}/{dataset}/...')
@@ -100,6 +102,7 @@ if __name__ == '__main__':
     opt = AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.99), eps=1e-10, weight_decay=args.wd)
     sched = warmup_linear(opt, int(updates_per_epoch * warmup_epochs), total_steps)
     scorer = make_lp_scorer(model, tr, args.walk_len, delta, args.score)
+    nll_scorer = make_lp_scorer(model, tr, args.walk_len, delta, 'nll')
 
     out_dir = args.out_dir or f'results/lp-{"temporal" if args.trw else "static"}/{name}'
     stem = (f'{"rand_init_" if args.from_random else ""}lp{run_tag(args.poison, args.tr_size)}{args.pretrain_tag}'
@@ -111,7 +114,7 @@ if __name__ == '__main__':
     def run_eval(epoch, updates):
         model.eval()
         torch.cuda.empty_cache()
-        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed))
+        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed, val_neg=args.val_neg, nll_fn=nll_scorer))
 
     if not (args.from_random or args.speedtest):
         run_eval(0, 0)

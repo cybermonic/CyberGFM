@@ -259,6 +259,53 @@ def random_edges(tr, n, generator=None):
     return src.to(d), dst.to(d), ts, ef
 
 
+VAL_NEG = ('degree', 'src', 'uniform')
+
+
+def _edge_keys(tr):
+    '''Sorted src * N + dst of every training edge (cached on the sampler), for rejecting real pairs.'''
+    if getattr(tr, '_edge_keys', None) is None:
+        src = tr.data.src.cpu().long() if 'src' in tr.data.keys() else \
+            torch.arange(tr.num_nodes).repeat_interleave(tr.data.idxptr[1:] - tr.data.idxptr[:-1])
+        tr._edge_keys = (src * tr.num_nodes + tr.data.col.cpu().long()).unique()
+    return tr._edge_keys
+
+
+def random_edges_degree(tr, n, generator=None, tries=20):
+    '''
+    Validation negatives that look like plausible traffic: the source, timestamp and edge features
+    of a random real training edge, and a destination drawn in proportion to in-degree (the
+    destination of another random training edge). Pairs that are training edges, and self-loops,
+    are redrawn, so every negative is a (src, dst) the training graph has never seen.
+    '''
+    E = tr.col.size(0)
+    pick = torch.randint(0, E, (n,), generator=generator)
+    if 'src' in tr.data.keys():
+        src = tr.data.src.cpu()[pick].long()
+    else:
+        src = torch.searchsorted(tr.rowptr.cpu(), pick, right=True) - 1
+    col = tr.data.col.cpu().long()
+    keys = _edge_keys(tr)
+    dst = col[torch.randint(0, E, (n,), generator=generator)]
+    for _ in range(tries):
+        k = src * tr.num_nodes + dst
+        pos = torch.searchsorted(keys, k).clamp(max=keys.numel() - 1)
+        bad = (keys[pos] == k) | (src == dst)
+        if not bad.any():
+            break
+        dst[bad] = col[torch.randint(0, E, (int(bad.sum()),), generator=generator)]
+
+    d = tr.device
+    pick_ts = pick.to(tr.ts.device)
+    ts = tr.ts[pick_ts].to(d)
+    ef = (tr.edge_attr[pick_ts] + tr.num_nodes).to(d) if tr.edge_features else None
+    return src.to(d), dst.to(d), ts, ef
+
+
+def val_negatives(kind):
+    return {'degree': random_edges_degree, 'src': random_edges_harder, 'uniform': random_edges}[kind]
+
+
 def lp_inputs(tr, src, dst, ts, ef, walk_len, delta):
     '''[walk ... src, (src->dst edge features), MASK] with dst as the target.'''
     rw = context(tr, src, ts, delta, use_walk=walk_len > 1)
@@ -314,22 +361,29 @@ def score_split(score_fn, split, tr, bs, desc):
 
 
 @torch.no_grad()
-def evaluate(score_fn, tr, va, te, bs, seed=0, recall=0.5):
+def evaluate(score_fn, tr, va, te, bs, seed=0, recall=0.5, val_neg='degree', nll_fn=None):
     '''
     Test: labeled test edges. Besides AUC and AP, reports metrics that stay comparable across
     splits with different attack rates (see metrics.py): AP lift over random ranking, and
     precision and benign edges flagged per day at `recall`.
-    Validation: held-out real edges (label 0) vs. an equal number of random edges (label 1).
+    Validation: held-out real edges (label 0) vs. an equal number of random edges (label 1),
+    drawn by val_negatives(val_neg):
+        degree   real source / time / features, destination by in-degree, never a training pair
+        src      real source / time / features, uniform destination (random_edges_harder)
+        uniform  uniform source and destination (the original; saturates near 0.99 AUC)
+    nll_fn: an LP scorer built with score='nll'. If given, the mean NLL of the true destination
+    over the validation edges is printed (not added to the results, so no new CSV column).
     '''
     te_pred = score_split(score_fn, te, tr, bs, 'test')
     te_y = te.label.cpu().numpy()
 
     tn = score_split(score_fn, va, tr, bs, 'val')
     g = torch.Generator().manual_seed(seed)
+    neg = val_negatives(val_neg)
     n = va.col.size(0)
     tp = torch.empty(n)
     for b in torch.arange(n).split(bs):
-        tp[b] = score_fn(*random_edges(tr, b.numel(), g)).float().cpu()
+        tp[b] = score_fn(*neg(tr, b.numel(), g)).float().cpu()
 
     va_pred = torch.cat([tp, tn]).numpy()
     va_y = np.concatenate([np.ones(n), np.zeros(n)])
@@ -338,6 +392,10 @@ def evaluate(score_fn, tr, va, te, bs, seed=0, recall=0.5):
     out = dict(te_auc=fast_auc(te_y, te_pred.numpy()), te_ap=te_ap)
     out.update(detection_metrics(te_y, te_pred.numpy(), te_ap, ts=te.ts.cpu().numpy(), recall=recall))
     out.update(va_auc=fast_auc(va_y, va_pred), va_ap=fast_ap(va_y, va_pred))
+    if nll_fn is not None:
+        nll = score_split(nll_fn, va, tr, bs, 'val nll')
+        print(f'  val ({val_neg} negatives) AUC {out["va_auc"]:.4f} AP {out["va_ap"]:.4f} | '
+              f'held-out NLL of the true destination {nll.mean():.4f} (median {nll.median():.4f})')
     return out
 
 

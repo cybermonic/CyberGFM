@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 
-from common import (SIZES, ResultTracker, SpeedTimer, causal_lp_inputs, dataset_kind, evaluate, last_real,
+from common import (VAL_NEG, SIZES, ResultTracker, SpeedTimer, causal_lp_inputs, dataset_kind, evaluate, last_real,
                     load_eval_samplers, load_train_graph, make_causal_lp_scorer, make_sampler,
                     run_tag, seed_everything, uses_edge_features, warmup_linear)
 from lp_finetune import BS, defaults
@@ -38,6 +38,8 @@ if __name__ == '__main__':
     ap.add_argument('--mini-bs', type=int)
     ap.add_argument('--eval-bs', type=int)
     ap.add_argument('--select-by', choices=['auc', 'ap'], default='auc')
+    ap.add_argument('--val-neg', choices=VAL_NEG, default='uniform',
+                    help='validation negatives (see common.evaluate);')
     ap.add_argument('--score', choices=['sigmoid', 'nll'], default='sigmoid')
     ap.add_argument('--from-random', action='store_true')
     ap.add_argument('--model-fname')
@@ -82,6 +84,7 @@ if __name__ == '__main__':
     opt = AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.99), eps=1e-10, weight_decay=args.wd)
     sched = warmup_linear(opt, int(updates_per_epoch * warmup_epochs), total_steps)
     scorer = make_causal_lp_scorer(model, tr, args.walk_len, delta, args.score)
+    nll_scorer = make_causal_lp_scorer(model, tr, args.walk_len, delta, 'nll')
 
     out_dir = args.out_dir or f'results/lp-gpt-{"temporal" if args.trw else "static"}/{name}'
     stem = (f'{"rand_init_" if args.from_random else ""}lp{run_tag(args.poison, args.tr_size)}{args.pretrain_tag}'
@@ -93,7 +96,7 @@ if __name__ == '__main__':
     def run_eval(epoch, updates):
         model.eval()
         torch.cuda.empty_cache()
-        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed))
+        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed, val_neg=args.val_neg, nll_fn=nll_scorer))
 
     if not (args.from_random or args.speedtest):
         run_eval(0, 0)

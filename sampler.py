@@ -301,7 +301,7 @@ def find_src(col_idx, idxptr):
 
 
 class RWSampler(TRWSampler):
-    def rw(self, batch, n_walks=1, trim_missing=True, walk_len=None, reverse=False, **kwargs):
+    def buggy_rw(self, batch, n_walks=1, trim_missing=True, walk_len=None, reverse=False, **kwargs):
         if walk_len is not None:
             wl = walk_len
         else:
@@ -348,7 +348,7 @@ class RWSampler(TRWSampler):
 
         return walks
 
-    def rw_true_backward(self, batch, n_walks=1, trim_missing=True, walk_len=None, reverse=False, **kwargs):
+    def rw(self, batch, n_walks=1, trim_missing=True, walk_len=None, reverse=False, **kwargs):
         if walk_len is not None:
             wl = walk_len
         else:
@@ -362,7 +362,7 @@ class RWSampler(TRWSampler):
         else:
             rowptr, col = self.rowptr, self.col
 
-        walks,eids = torch.ops.torch_cluster.random_walk(
+        walks,eids = random_walk(
             rowptr, col, batch.to(self.device),
             wl, 1, 1
         )
