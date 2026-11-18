@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
 
-from common import (VAL_NEG, SIZES, ResultTracker, SpeedTimer, causal_lp_inputs, dataset_kind, evaluate, last_real,
+from common import (SIZES, ResultTracker, SpeedTimer, causal_lp_inputs, dataset_kind, evaluate, last_real,
                     load_eval_samplers, load_train_graph, make_causal_lp_scorer, make_sampler,
                     run_tag, seed_everything, uses_edge_features, warmup_linear)
 from lp_finetune import BS, defaults
@@ -29,6 +29,10 @@ if __name__ == '__main__':
     ap.add_argument('--device', type=int, default=0)
     ap.add_argument('--trw', action='store_true')
     ap.add_argument('--ignore-edge-feats', action='store_true')
+    ap.add_argument('--undirected-walks', action='store_true',
+                    help='draw every random walk on the undirected training graph (as the BERT '
+                         'scripts); the edges fine-tuned on and scored stay directed. Give the run '
+                         'its own --tag, e.g. _undir')
     ap.add_argument('--walk-len', type=int, default=4)
     ap.add_argument('--delta', type=int, help='temporal walk window (seconds)')
     ap.add_argument('--epochs', type=int, default=5)
@@ -38,8 +42,6 @@ if __name__ == '__main__':
     ap.add_argument('--mini-bs', type=int)
     ap.add_argument('--eval-bs', type=int)
     ap.add_argument('--select-by', choices=['auc', 'ap'], default='auc')
-    ap.add_argument('--val-neg', choices=VAL_NEG, default='uniform',
-                    help='validation negatives (see common.evaluate);')
     ap.add_argument('--score', choices=['sigmoid', 'nll'], default='sigmoid')
     ap.add_argument('--from-random', action='store_true')
     ap.add_argument('--model-fname')
@@ -67,7 +69,8 @@ if __name__ == '__main__':
     accum = math.ceil(BS / mini_bs)
 
     tr_data = load_train_graph(name, edge_features, args.poison, args.tr_size)
-    tr = make_sampler(tr_data, args.trw, edge_features, args.walk_len, mini_bs, device)
+    tr = make_sampler(tr_data, args.trw, edge_features, args.walk_len, mini_bs, device,
+                      undirected_walks=args.undirected_walks)
     va, te = load_eval_samplers(name, args.trw, edge_features, args.walk_len, eval_bs)
 
     p = SIZES[args.size]
@@ -84,19 +87,18 @@ if __name__ == '__main__':
     opt = AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.99), eps=1e-10, weight_decay=args.wd)
     sched = warmup_linear(opt, int(updates_per_epoch * warmup_epochs), total_steps)
     scorer = make_causal_lp_scorer(model, tr, args.walk_len, delta, args.score)
-    nll_scorer = make_causal_lp_scorer(model, tr, args.walk_len, delta, 'nll')
 
     out_dir = args.out_dir or f'results/lp-gpt-{"temporal" if args.trw else "static"}/{name}'
     stem = (f'{"rand_init_" if args.from_random else ""}lp{run_tag(args.poison, args.tr_size)}{args.pretrain_tag}'
             f'_{args.size}_wl{args.walk_len}{args.tag}')
     tracker = ResultTracker(f'{out_dir}/{stem}.csv', args.select_by)
     print(f'{name}: edge features={edge_features}, delta={delta}, mini_bs={mini_bs} x{accum}, '
-          f'{total_steps} updates')
+          f'{total_steps} updates, walks={"undirected" if args.undirected_walks else "directed"}')
 
     def run_eval(epoch, updates):
         model.eval()
         torch.cuda.empty_cache()
-        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed, val_neg=args.val_neg, nll_fn=nll_scorer))
+        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed))
 
     if not (args.from_random or args.speedtest):
         run_eval(0, 0)

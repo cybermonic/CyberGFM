@@ -30,7 +30,7 @@
 # Run from the repo root on the login node; every model run is a bsub job.
 set -uo pipefail
 
-DATASETS=${DATASETS:-"lanl14argus lanl14argus-ts lanl14argus-dirtyts lanl14argus-cleants"}
+DATASETS=${DATASETS:-"lanl14argus-ts lanl14argus-dirtyts lanl14argus-cleants lanl14argus"}
 PSEEDS=${PSEEDS:-"1 2 3 4 5"}
 MODES=${MODES:-"static temporal"}
 HEADS=${HEADS:-"lp"}

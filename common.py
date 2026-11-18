@@ -28,6 +28,7 @@ HOUR, DAY = 60 * 60, 60 * 60 * 24
 SIZES = {
     'tiny': SimpleNamespace(H=128, L=2),
     'mini': SimpleNamespace(H=256, L=4),
+    'small': SimpleNamespace(H=512, L=4),
     'med': SimpleNamespace(H=512, L=8),
     'baseline': SimpleNamespace(H=768, L=12),
 }
@@ -259,7 +260,7 @@ def random_edges(tr, n, generator=None):
     return src.to(d), dst.to(d), ts, ef
 
 
-VAL_NEG = ('degree', 'src', 'uniform')
+VAL_NEG = ('uniform', 'degree', 'src')
 
 
 def _edge_keys(tr):
@@ -361,7 +362,7 @@ def score_split(score_fn, split, tr, bs, desc):
 
 
 @torch.no_grad()
-def evaluate(score_fn, tr, va, te, bs, seed=0, recall=0.5, val_neg='degree', nll_fn=None):
+def evaluate(score_fn, tr, va, te, bs, seed=0, recall=0.5, val_neg='uniform', nll_fn=None):
     '''
     Test: labeled test edges. Besides AUC and AP, reports metrics that stay comparable across
     splits with different attack rates (see metrics.py): AP lift over random ranking, and
@@ -370,7 +371,7 @@ def evaluate(score_fn, tr, va, te, bs, seed=0, recall=0.5, val_neg='degree', nll
     drawn by val_negatives(val_neg):
         degree   real source / time / features, destination by in-degree, never a training pair
         src      real source / time / features, uniform destination (random_edges_harder)
-        uniform  uniform source and destination (the original; saturates near 0.99 AUC)
+        uniform  uniform source and destination (the default; the original rule)
     nll_fn: an LP scorer built with score='nll'. If given, the mean NLL of the true destination
     over the validation edges is printed (not added to the results, so no new CSV column).
     '''
@@ -397,6 +398,134 @@ def evaluate(score_fn, tr, va, te, bs, seed=0, recall=0.5, val_neg='degree', nll
         print(f'  val ({val_neg} negatives) AUC {out["va_auc"]:.4f} AP {out["va_ap"]:.4f} | '
               f'held-out NLL of the true destination {nll.mean():.4f} (median {nll.median():.4f})')
     return out
+
+
+# ---------------------------------------------------------------------------
+# Validation probe (--val-probe): which validation metric tracks test AP?
+# ---------------------------------------------------------------------------
+def _triple_keys(src, dst, ef, num_nodes):
+    '''One int64 per (src, dst, edge features) -- or per (src, dst) without features. Wraps; used for set membership only.'''
+    h = src.long() * num_nodes + dst.long()
+    if ef is not None:
+        for j in range(ef.size(1)):
+            h = h * 1000003 + ef[:, j].long() + 1
+    return h
+
+
+def _train_keys(tr):
+    '''(sorted pair keys, sorted pair+feature keys) of the training edges, cached on the sampler.'''
+    if getattr(tr, '_probe_keys', None) is None:
+        data = tr.data
+        src = data.src.cpu().long() if 'src' in data.keys() else \
+            torch.arange(tr.num_nodes).repeat_interleave(data.idxptr[1:] - data.idxptr[:-1])
+        col = data.col.cpu().long()
+        ef = data.edge_attr.cpu() if tr.edge_features else None
+        tr._probe_keys = (_triple_keys(src, col, None, tr.num_nodes).unique(),
+                          _triple_keys(src, col, ef, tr.num_nodes).unique(), src, col)
+    return tr._probe_keys
+
+
+def _member(keys, k):
+    pos = torch.searchsorted(keys, k).clamp(max=keys.numel() - 1)
+    return keys[pos] == k
+
+
+def random_edges_featswap(tr, n, generator=None, tries=20):
+    '''
+    Attribute negatives: the source, destination and timestamp of a random real training edge with
+    the edge features of ANOTHER random training edge, redrawn until the (src, dst, features)
+    combination is one the training graph has never seen. The node pair is real; only its
+    attributes are wrong. None without edge features.
+    '''
+    if not tr.edge_features:
+        return None
+    _, triples, src_all, col_all = _train_keys(tr)
+    ea = tr.data.edge_attr.cpu()
+    E = col_all.size(0)
+    pick = torch.randint(0, E, (n,), generator=generator)
+    src, dst = src_all[pick], col_all[pick]
+    feat = torch.randint(0, E, (n,), generator=generator)
+    for _ in range(tries):
+        bad = _member(triples, _triple_keys(src, dst, ea[feat], tr.num_nodes))
+        if not bad.any():
+            break
+        feat[bad] = torch.randint(0, E, (int(bad.sum()),), generator=generator)
+    d = tr.device
+    ts = tr.ts[pick.to(tr.ts.device)].to(d)
+    return src.to(d), dst.to(d), ts, (ea[feat] + tr.num_nodes).to(d)
+
+
+def _auc_ap(pos, neg):
+    '''AUC / AP of negatives (label 1, should score higher) against positives (label 0); nan if either is empty.'''
+    if pos.numel() == 0 or neg.numel() == 0:
+        return float('nan'), float('nan')
+    pred = torch.cat([neg, pos]).numpy()
+    y = np.concatenate([np.ones(neg.numel()), np.zeros(pos.numel())])
+    return fast_auc(y, pred), fast_ap(y, pred)
+
+
+@torch.no_grad()
+def validation_probe(score_fn, tr, va, bs, seed=0, nll_fn=None, max_neg=200_000):
+    '''
+    Every candidate validation metric at once, so one run shows which of them moves with test AP.
+
+    Held-out (validation) edges, as three sets of positives:
+        all      every validation edge                                   (what evaluate() uses)
+        newpair  only those whose (src, dst) is NOT an edge of the training graph
+        newedge  only those whose (src, dst, edge features) combination is not in training
+    against three kinds of negatives (the same draws every epoch):
+        uniform   uniform source and destination                         (what evaluate() uses)
+        degree    real source / time / features, destination by in-degree, never a training pair
+        featswap  a real training pair with another edge's features, never a training combination
+    Returns {va_<positives>_<negatives>_auc / _ap, n_<positives>, nll_<positives>}.
+    '''
+    N = tr.num_nodes
+    pairs, triples, _, _ = _train_keys(tr)
+    v_src = va.data.src.cpu().long()
+    v_dst = va.data.col.cpu().long()
+    v_ef = va.data.edge_attr.cpu() if tr.edge_features else None
+    sets = {'all': torch.ones(v_dst.size(0), dtype=torch.bool),
+            'newpair': ~_member(pairs, _triple_keys(v_src, v_dst, None, N)),
+            'newedge': ~_member(triples, _triple_keys(v_src, v_dst, v_ef, N))}
+
+    pos = score_split(score_fn, va, tr, bs, 'probe val')
+    n = min(v_dst.size(0), max_neg)
+    out = {}
+    for kind, draw in (('uniform', random_edges), ('degree', random_edges_degree), ('featswap', random_edges_featswap)):
+        g = torch.Generator().manual_seed(seed)
+        neg, ok = torch.empty(n), True
+        for b in torch.arange(n).split(bs):
+            e = draw(tr, b.numel(), g)
+            if e is None:
+                ok = False
+                break
+            neg[b] = score_fn(*e).float().cpu()
+        for name, mask in sets.items():
+            auc, ap = _auc_ap(pos[mask], neg) if ok else (float('nan'), float('nan'))
+            out[f'va_{name}_{kind}_auc'], out[f'va_{name}_{kind}_ap'] = auc, ap
+    for name, mask in sets.items():
+        out[f'n_{name}'] = int(mask.sum())
+    if nll_fn is not None:
+        nll = score_split(nll_fn, va, tr, bs, 'probe nll')
+        for name, mask in sets.items():
+            out[f'nll_{name}'] = float(nll[mask].mean()) if mask.any() else float('nan')
+    return out
+
+
+def log_probe(path, epoch, m, probe):
+    '''Append one row (epoch, test metrics, every probe metric) to the probe CSV and print a summary.'''
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    row = dict(epoch=epoch, te_auc=m['te_auc'], te_ap=m['te_ap'], **probe)
+    new = not os.path.exists(path)
+    with open(path, 'w' if new else 'a') as f:
+        if new:
+            f.write(','.join(row) + '\n')
+        f.write(','.join(str(v) for v in row.values()) + '\n')
+    print(f'  probe [epoch {epoch}] test AP {m["te_ap"]:.4f} | validation AUC by positives (rows) and negatives (cols):')
+    for name in ('all', 'newpair', 'newedge'):
+        cells = '  '.join(f'{k} {probe[f"va_{name}_{k}_auc"]:.4f}' for k in ('uniform', 'degree', 'featswap'))
+        nll = f'  nll {probe[f"nll_{name}"]:.4f}' if f'nll_{name}' in probe else ''
+        print(f'    {name:<8} (n={probe[f"n_{name}"]:>8,})  {cells}{nll}')
 
 
 def _pid_alive(pid):

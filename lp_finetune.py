@@ -9,11 +9,12 @@ predict v at a [MASK] position. Anomaly score = 1 - sigmoid(logit_v).
 '''
 from argparse import ArgumentParser
 import math
+import os
 
 import torch
 from torch.optim import AdamW
 
-from common import (VAL_NEG, DAY, HOUR, ResultTracker, SpeedTimer, bert_config, dataset_kind, evaluate, lp_inputs,
+from common import (VAL_NEG, SIZES, log_probe, validation_probe, DAY, HOUR, ResultTracker, SpeedTimer, bert_config, dataset_kind, evaluate, lp_inputs,
                     load_eval_samplers, load_train_graph, make_lp_scorer, make_sampler,
                     pretrained_path, run_tag, seed_everything, uses_edge_features, warmup_linear)
 from models.gnn_bert import RWBert
@@ -40,7 +41,7 @@ def defaults(kind, size, walk_len):
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('--dataset', required=True)
-    ap.add_argument('--size', default='tiny', choices=['tiny', 'mini', 'med', 'baseline'])
+    ap.add_argument('--size', default='tiny', choices=SIZES.keys())
     ap.add_argument('--device', type=int, default=0)
     ap.add_argument('--trw', action='store_true')
     ap.add_argument('--ignore-edge-feats', action='store_true')
@@ -49,16 +50,20 @@ if __name__ == '__main__':
                          'fine-tuned on and the validation / test edges that are scored stay directed')
     ap.add_argument('--walk-len', type=int, default=4)
     ap.add_argument('--delta', type=int, help='temporal walk window (seconds)')
-    ap.add_argument('--epochs', type=int, default=5)
+    ap.add_argument('--epochs', type=int, default=10)
     ap.add_argument('--warmup-epochs', type=float, help='default: epochs / 3.75')
-    ap.add_argument('--lr', type=float, default=3e-4)
+    ap.add_argument('--lr', type=float, default=3e-5)
     ap.add_argument('--wd', type=float, default=0.02)
     ap.add_argument('--mini-bs', type=int)
     ap.add_argument('--eval-bs', type=int)
     ap.add_argument('--select-by', choices=['auc', 'ap'], default='auc')
     ap.add_argument('--val-neg', choices=VAL_NEG, default='uniform',
-                    help='validation negatives (see common.evaluate);')
+                    help='validation negatives (see common.evaluate); degree and src are harder variants')
     ap.add_argument('--score', choices=['sigmoid', 'nll'], default='sigmoid')
+    ap.add_argument('--val-probe', action='store_true',
+                    help='at every evaluation also compute every candidate validation metric '
+                         '(common.validation_probe) and write them to <out-dir>/probe/<stem>.csv; '
+                         'the results CSV is unchanged')
     ap.add_argument('--from-random', action='store_true')
     ap.add_argument('--model-fname', help='default: pretrained/{static,temporal}/{dataset}/...')
     ap.add_argument('--best-pretrained', action='store_true', help='load the -best pretraining checkpoint')
@@ -111,10 +116,18 @@ if __name__ == '__main__':
     print(f'{name}: edge features={edge_features}, delta={delta}, mini_bs={mini_bs} x{accum}, '
           f'{total_steps} updates, walks={"undirected" if args.undirected_walks else "directed"}')
 
+    probe_csv = f'{out_dir}/probe/{stem}.csv'
+    if args.val_probe and os.path.exists(probe_csv):
+        os.remove(probe_csv)          # a rerun starts its probe file over
+
     def run_eval(epoch, updates):
         model.eval()
         torch.cuda.empty_cache()
-        tracker.log(epoch, updates, evaluate(scorer, tr, va, te, eval_bs, seed=args.seed, val_neg=args.val_neg, nll_fn=nll_scorer))
+        m = evaluate(scorer, tr, va, te, eval_bs, seed=args.seed, val_neg=args.val_neg, nll_fn=nll_scorer)
+        tracker.log(epoch, updates, m)
+        if args.val_probe:
+            log_probe(probe_csv, epoch, m,
+                      validation_probe(scorer, tr, va, eval_bs, seed=args.seed, nll_fn=nll_scorer))
 
     if not (args.from_random or args.speedtest):
         run_eval(0, 0)

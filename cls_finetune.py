@@ -12,7 +12,7 @@ import math
 import torch
 from torch.optim import AdamW
 
-from common import (VAL_NEG, DAY, MASK, PAD, ResultTracker, SpeedTimer, bert_config, context, dataset_kind, evaluate, left_align,
+from common import (VAL_NEG, DAY, MASK, PAD, SIZES, ResultTracker, SpeedTimer, bert_config, context, dataset_kind, evaluate, left_align,
                     load_eval_samplers, load_train_graph, make_sampler, pretrained_path,
                     random_edges, run_tag, seed_everything, uses_edge_features, warmup_linear)
 from models.gnn_bert import RWBertFT
@@ -31,7 +31,7 @@ def cls_inputs(tr, src, dst, ts, ef, walk_len, delta):
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('--dataset', required=True)
-    ap.add_argument('--size', default='tiny', choices=['tiny', 'mini', 'med', 'baseline'])
+    ap.add_argument('--size', default='tiny', choices=SIZES.keys())
     ap.add_argument('--device', type=int, default=0)
     ap.add_argument('--trw', action='store_true')
     ap.add_argument('--ignore-edge-feats', action='store_true')

@@ -17,7 +17,7 @@ import time
 import torch
 from torch.optim import AdamW
 
-from common import (DAY, HOUR, PAD, SpeedTimer, bert_config, dataset_kind, evaluate, load_eval_samplers,
+from common import (DAY, HOUR, PAD, SIZES, SpeedTimer, bert_config, dataset_kind, evaluate, load_eval_samplers,
                     load_train_graph, make_lp_scorer, make_sampler, pretrained_path,
                     run_tag, save_checkpoint, seed_everything, uses_edge_features, walk_sampler)
 from models.gnn_bert import RWBert
@@ -57,7 +57,7 @@ def lr_at(tokens, total, warmup):
 if __name__ == '__main__':
     ap = ArgumentParser()
     ap.add_argument('--dataset', required=True, help='data/{dataset}_tgraph_*.pt, e.g. lanl14argus, optc-ts, unsw')
-    ap.add_argument('--size', default='tiny', choices=['tiny', 'mini', 'med', 'baseline'])
+    ap.add_argument('--size', default='tiny', choices=SIZES.keys())
     ap.add_argument('--device', type=int, default=0, help='-1 for CPU')
     ap.add_argument('--trw', action='store_true', help='temporally biased walks')
     ap.add_argument('--ignore-edge-feats', action='store_true')

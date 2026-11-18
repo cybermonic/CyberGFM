@@ -19,7 +19,7 @@
 # Run from the repo root on the login node.
 set -uo pipefail
 
-SIZES=${SIZES:-"mini med baseline"}
+SIZES=${SIZES:-"mini small med baseline"}
 here=$(cd "$(dirname "$0")" && pwd)
 runner=${RUNNER:-$here/run_all_hpc.sh}
 [ -f "$runner" ] || runner=./run_all_hpc.sh
@@ -34,9 +34,9 @@ export WALL_PT=${WALL_PT:-"48:00"}   # h100: default RUNLIMIT 2880 min, max 2940
 export WALL_FT=${WALL_FT:-"24:00"}
 
 for size in $SIZES; do
-  case "$size" in mini|med|baseline|tiny) ;; *) echo "unknown size '$size'" >&2; exit 1 ;; esac
+  case "$size" in mini|small|med|baseline|tiny) ;; *) echo "unknown size '$size'" >&2; exit 1 ;; esac
   echo "=== $size ==="
-  SIZE=$size DATASETS=lanl14argus MODES=static WLS=2 \
+  SIZE=$size DATASETS="lanl14argus optc" WLS=4 \
   LOGDIR=logs/size-$size \
     bash "$runner" "$@" || exit $?
   echo

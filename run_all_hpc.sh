@@ -60,7 +60,7 @@ REPO=${REPO:-$PWD}
 PSEEDS=${PSEEDS:-"1 2 3 4 5"}
 DATASETS=${DATASETS:-"optc unsw lanl14argus optc-argus lanl14argus-ts lanl14argus-dirtyts lanl14argus-cleants"}
 MODES=${MODES:-"static temporal"}
-WLS=${WLS:-"1 2 3 4 5 6 7 8 9 10 12 14 16"}        # or WLS=match for the pretraining walk length per dataset
+WLS=${WLS:-"match"}        # or WLS=match for the pretraining walk length per dataset
 SIZE=${SIZE:-tiny}
 EXTRA_PRETRAIN=${EXTRA_PRETRAIN:-""}
 EXTRA_FT=${EXTRA_FT:-""}
