@@ -320,7 +320,7 @@ def make_lp_scorer(model, tr, walk_len, delta, score='sigmoid'):
     '''Anomaly score for edges (higher = more anomalous).'''
     def score_fn(src, dst, ts, ef):
         walk, mask, tgt, attn = lp_inputs(tr, src, dst, ts, ef, walk_len, delta)
-        logits = model.modified_fwd(walk, mask, tgt, attn, return_loss=False).logits[mask]
+        logits = model.masked_logits(walk, mask, attn)   # vocabulary logits at the [MASK] position only
         idx = torch.arange(dst.size(0), device=dst.device)
         if score == 'nll':
             return -torch.log_softmax(logits.float(), dim=-1)[idx, dst]
