@@ -27,7 +27,15 @@ class Evaluator():
 
     def sample(self, tr, src,dst,ts, walk_len, edge_features=None):
         if walk_len > 1:
-            rw = tr.rw(src, max_ts=ts, min_ts=(ts-self.DELTA).clamp(0), reverse=True, trim_missing=False)
+            if not hasattr(tr, '_ts_max'):
+                tr._ts_max = int(tr.ts.max())
+
+            max_ts = ts.clamp(max=tr._ts_max)
+            min_ts = (max_ts - self.DELTA).clamp(0)
+            rw = tr.rw(src, max_ts=max_ts, min_ts=min_ts, reverse=True, trim_missing=False)
+
+            if edge_features is not None and tr.edge_features:
+                rw = rw[:, :-edge_features.size(1)]
         else:
             rw = src.unsqueeze(-1)
 
@@ -82,9 +90,9 @@ class Evaluator():
             del pred
             torch.cuda.empty_cache()
 
-        if not self.downsample: 
+        if not self.downsample:
             idxs = torch.arange(te.col.size(0)).split(self.EVAL_BS)
-        else: 
+        else:
             to_sample = torch.rand(te.col.size(0))
             to_sample[te.label == 1] = 0
             idxs = (to_sample < self.downsample).nonzero().squeeze()
@@ -145,9 +153,9 @@ class Evaluator():
             del pred
             torch.cuda.empty_cache()
 
-        if not self.downsample: 
+        if not self.downsample:
             idxs = torch.arange(va.col.size(0)).split(self.EVAL_BS)
-        else: 
+        else:
             to_sample = torch.rand(va.col.size(0))
             idxs = (to_sample < self.downsample).nonzero().squeeze()
 
@@ -249,8 +257,8 @@ class Evaluator():
         va.to('cpu')
 
         return te_auc, te_ap, va_auc, va_ap
-    
-class CausalEvaluator(Evaluator): 
+
+class CausalEvaluator(Evaluator):
     def sample(self, tr, src,dst,ts, walk_len, edge_features=None):
         if walk_len > 1:
             rw = tr.rw(src, max_ts=ts, min_ts=(ts-self.DELTA).clamp(0), reverse=True, trim_missing=False)
@@ -298,9 +306,9 @@ class CausalEvaluator(Evaluator):
             del out
             torch.cuda.empty_cache()
 
-        if not self.downsample: 
+        if not self.downsample:
             idxs = torch.arange(te.col.size(0)).split(self.EVAL_BS)
-        else: 
+        else:
             to_sample = torch.rand(te.col.size(0))
             to_sample[te.label == 1] = 0
             idxs = (to_sample < self.downsample).nonzero().squeeze()
@@ -355,9 +363,9 @@ class CausalEvaluator(Evaluator):
             del out
             torch.cuda.empty_cache()
 
-        if not self.downsample: 
+        if not self.downsample:
             idxs = torch.arange(va.col.size(0)).split(self.EVAL_BS)
-        else: 
+        else:
             to_sample = torch.rand(va.col.size(0))
             idxs = (to_sample < self.downsample).nonzero().squeeze()
 

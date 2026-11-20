@@ -1,13 +1,13 @@
 import torch
 import math
-from torch.optim.optimizer import Optimizer, required 
+from torch.optim.optimizer import Optimizer, required
 
 class SOAP(torch.optim.Optimizer):
     r"""
     # This is a wrapper of SOAP_ADAM and SOAP_SGD
     """
-    def __init__(self, params, 
-                 lr=required, weight_decay=0, 
+    def __init__(self, params,
+                 lr=required, weight_decay=0,
                  mode='sgd',
                  momentum=0, dampening=0, nesterov=False, # sgd
                  betas=(0.9, 0.999), eps=1e-8, amsgrad=False, # adam
@@ -26,12 +26,12 @@ class SOAP(torch.optim.Optimizer):
             raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
         if not isinstance(mode, str):
            raise ValueError("Invalid mode type: {}".format(mode))
-             
-        try: 
+
+        try:
             params = params.parameters()
         except:
             params = params
-         
+
         self.lr = lr
         self.steps = 0
         self.mode = mode.lower()
@@ -40,7 +40,7 @@ class SOAP(torch.optim.Optimizer):
                         betas=betas, eps=eps, amsgrad=amsgrad)
         if nesterov and (momentum <= 0 or dampening != 0):
             raise ValueError("Nesterov momentum requires a momentum and zero dampening")
-            
+
         super(SOAP, self).__init__(params, defaults)
 
     def __setstate__(self, state):
@@ -52,7 +52,7 @@ class SOAP(torch.optim.Optimizer):
                group.setdefault('amsgrad', False)
             else:
                NotImplementedError
-                
+
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -73,7 +73,7 @@ class SOAP(torch.optim.Optimizer):
                momentum = group['momentum']
                dampening = group['dampening']
                nesterov = group['nesterov']
-               self.lr = group['lr']  
+               self.lr = group['lr']
                for p in group['params']:
                   if p.grad is None:
                       print(p.shape)
@@ -142,12 +142,11 @@ class SOAP(torch.optim.Optimizer):
                     step_size = group['lr'] / bias_correction1
 
                     p.addcdiv_(exp_avg, denom, value=-step_size)
-                    
+
         self.steps += 1
         return loss
-    
+
     def update_lr(self, decay_factor=None):
         if decay_factor != None:
             self.param_groups[0]['lr'] = self.param_groups[0]['lr']/decay_factor
             print ('Reducing learning rate to %.5f @ T=%s!'%(self.param_groups[0]['lr'], self.steps))
-            

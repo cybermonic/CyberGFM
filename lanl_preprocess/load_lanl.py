@@ -17,7 +17,7 @@ DATE_OF_EVIL_LANL = 150885
 FILE_DELTA = 10000
 
 # Input the path where LANL data locates which should be the same as DST in split_lanl.py
-LANL_FOLDER = 'LANL_Argus_processed/'
+LANL_FOLDER = '/mnt/raid10/cyber_datasets/lanl/split_lanl/'
 assert LANL_FOLDER, 'Please fill in the LANL_FOLDER in ./loaders/load_lanl.py'
 
 
@@ -172,7 +172,7 @@ def load_partial_lanl(start=140000, end=156659, delta=8640, is_test=False, use_f
     #print('start:' + str(start) + ', end:' + str(end))
     cur_slice = int(start - (start % FILE_DELTA))
     start_f = str(cur_slice) + '.txt'
-    in_f = open(LANL_FOLDER + start_f, 'r')
+    in_f = open(LANL_FOLDER + '/auth/' + start_f, 'r')
 
     edges = []
     ews = []
@@ -310,8 +310,8 @@ def load_partial_lanl(start=140000, end=156659, delta=8640, is_test=False, use_f
         in_f.close()
         cur_slice += FILE_DELTA
 
-        if os.path.exists(LANL_FOLDER + str(cur_slice) + '.txt'):
-            in_f = open(LANL_FOLDER + str(cur_slice) + '.txt', 'r')
+        if os.path.exists(LANL_FOLDER + '/auth/' + str(cur_slice) + '.txt'):
+            in_f = open(LANL_FOLDER + '/auth/' + str(cur_slice) + '.txt', 'r')
             line = in_f.readline()
             if use_flows:
                 eas_flows = load_flows(LANL_FOLDER + '/flows/' + str(cur_slice) + '.txt', start, end)

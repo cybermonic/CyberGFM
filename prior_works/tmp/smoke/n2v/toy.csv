@@ -1,0 +1,2 @@
+seed,model,dataset,dim,walk_len,ctx,n2v_epochs,n2v_lr,n2v_bs,lr,bs,epochs,patience,undirected,host,finished,minutes,auc,ap,ap_lift,prec_r50,fp_day_r50,va_auc,va_ap,epoch,epochs_ran,auc_last,ap_last,ap_snooped,epoch_snooped
+1,n2v,toy,128,20,5,1,0.01,512,0.01,100000,2,10,False,node05.hs.cluster,2026-10-22T01:02:14,0.01,0.9205729166666666,0.7698281088748986,14.626734068623074,1.0,0.0,0.8607680040627809,0.9044346494565081,1,2,0.9205729166666666,0.7698281088748986,0.7698281088748986,1

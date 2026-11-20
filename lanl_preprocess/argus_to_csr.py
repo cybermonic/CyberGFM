@@ -6,14 +6,26 @@ import torch
 from torch_geometric.data import Data
 from tqdm import tqdm
 
-from load_utils import id_edge_a
+from load_utils import id_edge_a, std_edge_a, std_edge_w
 from load_lanl import load_partial_lanl, TIMES
 
 # Same config as reported in paper
 END = TIMES['test']
 DELTA = 60**2
 
-def build_csr(raw=False):
+def build_csr():
+    '''
+    Builds the tokenized and the raw file in one pass; both share the same edge order.
+
+    Tokenized file (lanl14argus_tgraph_csr.pt), for CyberGFM:
+        edge_attr    tokens of the unscaled attributes, plus the edge weight as the last column
+        edge_weight  the loader's default `standardized` weight (z-score + sigmoid, per hour)
+
+    Raw file (lanl14argus_tgraph_raw_csr.pt), for Argus and the other baselines -- exactly what
+    Argus's own loader feeds its model (load_lanl_dist defaults):
+        edge_attr    std_edge_a of the attributes, per hour (the 0.5 / 0.73 / 0.88 values)
+        edge_weight  std_edge_w of the per-hour event count
+    '''
     t = 0
     jobs = []
     ea_map = dict()
@@ -40,14 +52,15 @@ def build_csr(raw=False):
                 return get_or_add(f'10^{int(log10(ef))}')
             #
         else:
-            ef = int(ef*10)
+            ef = int(ef*100)
             return get_or_add(f'0.{ef}')
 
     def fmt_ea_row(row):
         return [ea_to_token(ea) for ea in row]
 
     num_nodes = 0
-    csr = defaultdict(lambda : [[],[],[],[]])
+    # dst, tokenized attr, ts, mal idx, edge weight, Argus attr, Argus edge weight
+    csr = defaultdict(lambda : [[],[],[],[],[],[],[]])
     test = 0
     for j in tqdm(jobs, desc='Reading raw'):
         tgraph = load_partial_lanl(start=j[0], end=j[1], delta=DELTA, is_test=True, use_flows=True, ea_fn=id_edge_a)
@@ -62,21 +75,25 @@ def build_csr(raw=False):
 
         ei = tgraph.eis[0]
         ea = tgraph.eas[0]
+        ew = tgraph.ews[0]
         y = tgraph.ys[0]
+
+        # Argus's own normalisation, computed over the whole hour before any split
+        std_ea = std_edge_a([ea])[0]
+        std_ew = std_edge_w([tgraph.cnt[0]])[0]
 
         for i in range(ei.size(1)):
             src,dst = ei[:,i]
             src = src.item()
             dst = dst.item()
 
-            if not raw:
-                attr = fmt_ea_row(ea[:,i])
-            else:
-                attr = ea[:,i].tolist()
-
             csr[src][0].append(dst)
-            csr[src][1].append(attr)
+            # edge weight goes on the end as one more token column
+            csr[src][1].append(fmt_ea_row(ea[:,i]) + [ea_to_token(ew[i].item())])
+            csr[src][5].append(std_ea[:,i].tolist())
             csr[src][2].append(j[0])
+            csr[src][4].append(ew[i].item())
+            csr[src][6].append(std_ew[i].item())
 
             if y[i]:
                 csr[src][3].append(len(csr[src][0])-1)
@@ -88,31 +105,45 @@ def build_csr(raw=False):
     idxptr = [0]
     col = []
     attr = []
+    raw_attr = []
     label = []
     ts = []
+    ew = []
+    raw_ew = []
 
     for i in tqdm(range(num_nodes), desc='Building torch'):
-        neigh,ef,t,y = csr[i]
+        neigh,ef,t,y,w,raw_ef,raw_w = csr[i]
         col += neigh
         attr += ef
+        raw_attr += raw_ef
         ts += t
+        ew += w
+        raw_ew += raw_w
 
         if y:
             label += [y_ + idxptr[-1] for y_ in y]
 
         idxptr.append(idxptr[-1] + len(neigh))
 
-    fname = f'../data/lanlargus_tgraph{"_raw" if raw else ""}.pt'
-    torch.save(
-        Data(
-            x = torch.zeros((num_nodes,1)),
-            idxptr = torch.tensor(idxptr),
-            col = torch.tensor(col),
-            edge_attr = torch.tensor(attr),
-            is_mal = torch.tensor(label),
-            ts = torch.tensor(ts)
-        ),
-        fname
-    )
+    idxptr = torch.tensor(idxptr)
+    col = torch.tensor(col)
+    ew = torch.tensor(ew)
+    raw_ew = torch.tensor(raw_ew)
+    label = torch.tensor(label)
+    ts = torch.tensor(ts)
 
-build_csr(raw=True)
+    for suffix, ea, w in (('', attr, ew), ('_raw', raw_attr, raw_ew)):
+        torch.save(
+            Data(
+                x = torch.zeros((num_nodes,1)),
+                idxptr = idxptr,
+                col = col,
+                edge_attr = torch.tensor(ea),
+                edge_weight = w,
+                is_mal = label,
+                ts = ts
+            ),
+            f'../data/lanl14argus_tgraph{suffix}_csr.pt'
+        )
+
+build_csr()

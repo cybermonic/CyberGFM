@@ -10,3 +10,4 @@ log.txt
 .vscode/
 print_best.py
 scratch.py
+*.zip

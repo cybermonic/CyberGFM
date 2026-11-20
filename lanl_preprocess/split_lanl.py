@@ -2,16 +2,16 @@
 From Argus src
 '''
 
-import gzip 
+import gzip
 import os
 import pickle
 from tqdm import tqdm
 # Set dataset paths
 # =============
-SRC_DIR = '/mnt/raid1_ssd_4tb/datasets/LANL15/' # Directory of flows.txt, auth.txt
+SRC_DIR = '/mnt/raid10/cyber_datasets/lanl/' # Directory of flows.txt, auth.txt
 RED = SRC_DIR + 'redteam.txt.gz' # Location of redteam.txt
 SRC = SRC_DIR + 'auth.txt.gz' # Location of auth.txt
-DST = '../LANL_Argus_processed/' # Directory to save output files to
+DST = '../data/lanl_processed/' # Directory to save output files to
 # =============
 
 

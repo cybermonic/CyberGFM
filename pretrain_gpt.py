@@ -1,340 +1,196 @@
+'''
+Pretrain the causal (GPT) CyberGFM variant with next-token prediction on random walks.
+Same data, walks, token budget and schedule as pretrain.py so the two are comparable.
+
+    python pretrain_gpt.py --dataset lanl14argus --device 0
+    python pretrain_gpt.py --dataset optc-ts --trw --device 0
+    python pretrain_gpt.py --dataset lanl14argus --device 0 --speedtest   # one epoch, timings only
+
+    python pretrain_gpt.py --dataset lanl14argus-ts --undirected-walks --tag _undir --device 0
+
+Checkpoints: pretrained/{static,temporal}/{dataset}/{t}rw_gpt_{dataset}..._{size}.pt
+'''
 from argparse import ArgumentParser
+import math
 import os
-from random import choice, shuffle
 import time
-from types import SimpleNamespace
 
 import torch
-from torch.optim.adamw import AdamW
-from torch.optim.lr_scheduler import LRScheduler
+from torch.optim import AdamW
 
-from eval_trw import CausalEvaluator
-from models.hugging_gpt import GPT
-from models.gnn_bert import GNNEmbedding
-from poison_datasets import poison
-from rw_sampler import RWSampler, TRWSampler
-from transformers import OpenAIGPTConfig
-from tokenizer import RWTokenizer
-from utils import reindex
+from common import (DAY, HOUR, PAD, SIZES, SpeedTimer, dataset_kind, evaluate, load_eval_samplers,
+                    load_train_graph, make_causal_lp_scorer, make_sampler, pretrained_path,
+                    run_tag, save_checkpoint, seed_everything, uses_edge_features, walk_sampler)
+from models.hugging_gpt import GPT, gpt_config
+from pretrain import BS, LOG_EVERY, defaults, lr_at
 
-WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
-TOTAL_T = 10 ** 9           #(originally 10**10)
-FIXED_SMTP_RATE = 0.7
 
-WALK_LEN = 64
-BS = 1024
-EVAL_BS = 1024
-EVAL_EVERY = 1
-
-SPEEDTEST = False
-
-class Scheduler(LRScheduler):
-    def get_lr(self):
-        # Warmup period of 10 ** 8 tokens
-        if self.last_epoch < WARMUP_T:
-            return [group['initial_lr'] * (self.last_epoch / WARMUP_T)
-                    for group in self.optimizer.param_groups]
-        # Linear decay after that
-        else:
-            coeff = max(1e-8, 1 - ((self.last_epoch-WARMUP_T)/(TOTAL_T-WARMUP_T)))
-
-            return [group['initial_lr'] * coeff
-                    for group in self.optimizer.param_groups]
-
-def minibatch(walks, model: GPT):
-    token_count = (walks != GNNEmbedding.PAD).sum()
-    loss = model(walks)
-    loss.backward()
-
-    return loss, token_count
-
-def train(g: RWSampler, model: GPT):
-    opt = AdamW(
-        model.parameters(), lr=3e-4,
-        betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1
-    )
-    sched = Scheduler(opt)
-
-    with open(f'{LOG_OUT}/{OUT_F}_log_{SIZE}.txt', 'w+') as f:
-        pass
-
-    #model.eval()
-    #te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g,va,te,model)
-    with open(f'{LOG_OUT}/{OUT_F}_eval_{SIZE}.csv', 'w+') as f:
-        f.write('e,tokens,te_auc,te_ap,va_auc,va_ap\n')
-        #f.write(f'0,{te_auc},{te_ap},{va_auc},{va_ap}\n')
-
-    updates = 1
-    opt.zero_grad()
-    st = time.time()
-    steps = 0
-    processed_tokens = 0
-    best = 0
-
-    e = 0
-    while processed_tokens < TOTAL_T:
-        st = time.time()
-
-        for i,mb in enumerate(g):
-            if mb.size(0) == 0:
-                continue
-            model.train()
-            loss, tokens = minibatch(mb, model)
-            steps += 1
-
-            if steps * MINI_BS >= BS:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
-
-                opt_st = time.time()
-                opt.step()
-                opt_en = time.time() - opt_st
-                sched.step()
-
-                processed_tokens += tokens
-                t.set_mask_rate(min(1, (processed_tokens / WARMUP_T)))
-
-                updates += 1
-                lr = sched.get_last_lr()[0]
-                sched.last_epoch = processed_tokens
-                opt.zero_grad()
-                steps = 0
-
-                en = time.time()
-
-                if updates % CHECKPOINT == CHECKPOINT-1:
-                    torch.save(
-                        (model.state_dict()),
-                        f'{OUT_F}_{SIZE}.pt'
-                    )
-
-                # Log update
-                with open(f'{LOG_OUT}/{OUT_F}_log_{SIZE}.txt', 'a') as f:
-                    f.write(f'{loss},{updates},{processed_tokens},{en-st}\n')
-
-                print(f'[{updates}-{e}] {loss:0.6f} (lr: {lr:0.2e}, mask rate {t.mask_rate:0.4f} tokens: {processed_tokens:0.2e}, seq len: {tokens/MINI_BS:0.2f} {en-st:0.2f}s)')
-                st = time.time()
-
-            if processed_tokens >= TOTAL_T:
-                break
-
-        if SPEEDTEST:
-            exit()
-
-        e += 1
-        with torch.no_grad():
-            if e % EVAL_EVERY == 0:
-                torch.cuda.empty_cache()
-                model.eval()
-                te_auc, te_ap, va_auc, va_ap = evaluator.get_metrics(g, va, te, model)
-
-                if va_auc > best:
-                    torch.save(
-                        model.state_dict(),
-                        f'{LOG_OUT}/{OUT_F}_{SIZE}-best.pt'
-                    )
-                    best = va_auc
-
-                with open(f'{LOG_OUT}/{OUT_F}_eval_{SIZE}.csv', 'a') as f:
-                    f.write(f'{updates},{processed_tokens},{te_auc},{te_ap},{va_auc},{va_ap}\n')
-
-        torch.save(
-            model.state_dict(),
-            f'{LOG_OUT}/{OUT_F}_{SIZE}.pt'
-        )
-
+def gpt_pretrained_path(*args, **kwargs):
+    return pretrained_path(*args, **kwargs).replace('_bert_', '_gpt_')
 
 
 if __name__ == '__main__':
-    arg = ArgumentParser()
-    arg.add_argument('--size', default='tiny')
-    arg.add_argument('--device', type=int, default=-1)
-    arg.add_argument('--optc', action='store_true')
-    arg.add_argument('--unsw', action='store_true')
-    arg.add_argument('--fourteen', action='store_true')
-    arg.add_argument('--lanlflows', action='store_true')
-    arg.add_argument('--lanlcomp', action='store_true')
-    arg.add_argument('--argus', action='store_true')
-    arg.add_argument('--delta', type=int, default=-1)
-    arg.add_argument('--trw', action='store_true')
-    arg.add_argument('--tr-size', type=float, default=1.)
-    arg.add_argument('--lanl14argus', action='store_true')
-    arg.add_argument('--log-out', default='.')
-    arg.add_argument('--n-tokens', default=0, type=int)
-    arg.add_argument('--poison', default=0, type=int)
-    args = arg.parse_args()
-
+    ap = ArgumentParser()
+    ap.add_argument('--dataset', required=True)
+    ap.add_argument('--size', default='tiny', choices=list(SIZES))
+    ap.add_argument('--device', type=int, default=0, help='-1 for CPU')
+    ap.add_argument('--trw', action='store_true')
+    ap.add_argument('--ignore-edge-feats', action='store_true')
+    ap.add_argument('--undirected-walks', action='store_true',
+                    help='draw every random walk on the undirected training graph (as the BERT '
+                         'scripts); the edges fine-tuned on and scored stay directed. Give the run '
+                         'its own --tag, e.g. _undir')
+    ap.add_argument('--walk-len', type=int)
+    ap.add_argument('--n-tokens', type=float, help='training length in units of 1e8 tokens')
+    ap.add_argument('--mini-bs', type=int)
+    ap.add_argument('--eval-every', type=int, help='epochs between evaluations; 0 disables')
+    ap.add_argument('--eval-walk-len', type=int, default=1,
+                    help='context walk length for the periodic evaluation. The default (1) scores '
+                         '[src, features, MASK] with no walk, which the model never sees in training; '
+                         'match the fine-tuning walk length for a more meaningful proxy.')
+    ap.add_argument('--eval-delta', type=int, help='temporal window for eval walks (default: 1h LANL, 1d OpTC, 0 UNSW)')
+    ap.add_argument('--snapshot-every', type=float,
+                    help='also keep a checkpoint every N x 1e8 tokens, for plotting fine-tuned '
+                         'performance against pretraining length')
+    ap.add_argument('--poison', type=int, default=0)
+    ap.add_argument('--tr-size', type=float, default=1.0)
+    ap.add_argument('--log-out')
+    ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--tag', default='', help='checkpoint suffix for pretraining variants, e.g. _wl32')
+    ap.add_argument('--speedtest', action='store_true',
+                    help='train one epoch without evaluation or checkpoints, write timings to latency/, exit')
+    args = ap.parse_args()
     print(args)
+    seed_everything(args.seed)
 
-    LOG_OUT = args.log_out
-    SIZE = args.size
-    DEVICE = args.device if args.device >= 0 else 'cpu'
+    name, kind = args.dataset, dataset_kind(args.dataset)
+    device = args.device if args.device >= 0 else 'cpu'
+    edge_features = uses_edge_features(name, args.ignore_edge_feats)
+    cfg = defaults(kind, args.size, edge_features, args.trw)
+    walk_len = args.walk_len or cfg['walk_len']
+    mini_bs = args.mini_bs or cfg['mini_bs']
+    eval_every = cfg['eval_every'] if args.eval_every is None else args.eval_every
+    eval_delta = args.eval_delta if args.eval_delta is not None else {'lanl': HOUR, 'unsw': 0, 'optc': DAY}[kind]
+    snapshot_every = int(args.snapshot_every * 1e8) if args.snapshot_every else 0
+    total = int(args.n_tokens * 1e8) if args.n_tokens else int(cfg['total_tokens'])
+    warmup = total // 10
+    accum = math.ceil(BS / mini_bs)
 
-    params = {
-        'tiny': SimpleNamespace(H=128, L=2, MINI_BS=1024),
-        'mini': SimpleNamespace(H=256, L=4, MINI_BS=1024),
-        'med': SimpleNamespace(H=512, L=8, MINI_BS=1024),
-        'baseline': SimpleNamespace(H=768, L=12, MINI_BS=256)
-    }[SIZE]
+    ckpt = gpt_pretrained_path(name, args.size, args.trw, args.poison, args.tr_size, tag=args.tag)
+    best_ckpt = gpt_pretrained_path(name, args.size, args.trw, args.poison, args.tr_size, best=True, tag=args.tag)
+    log_dir = args.log_out or os.path.dirname(ckpt)
+    os.makedirs(os.path.dirname(ckpt), exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    stem = f'{"t" if args.trw else ""}rw_gpt_{name}{run_tag(args.poison, args.tr_size)}{args.tag}_{args.size}'
 
-    DATASET = 'optc' if args.optc else 'unsw' if args.unsw else 'lanl14' if args.fourteen \
-        else 'lanl14attr' if args.lanlflows else 'lanl14compressedattr' if args.lanlcomp \
-        else 'lanl14argus' if (args.argus or args.lanl14argus) else 'lanl'
-    MINI_BS = params.MINI_BS
+    tr_data = load_train_graph(name, edge_features, args.poison, args.tr_size)
+    tr = make_sampler(tr_data, args.trw, edge_features, walk_len, mini_bs, device,
+                      undirected_walks=args.undirected_walks)
+    walk_src = walk_sampler(tr)  # tr itself unless --undirected-walks
+    tr.n_walks = walk_src.n_walks = cfg['n_walks']
+    va, te = load_eval_samplers(name, args.trw, edge_features, walk_len, cfg['eval_bs'])
 
-    edge_features = args.unsw or args.lanlflows or args.lanlcomp or args.argus
-    print(DATASET)
+    print(f'{name}: edge features={edge_features}, walk_len={walk_len}, mini_bs={mini_bs} x{accum}, '
+          f'tokens={total:.1e}, vocab={int(tr.num_tokens)}, '
+          f'walks={"undirected" if args.undirected_walks else "directed"}')
 
-    if DATASET == 'optc':
-        MINI_BS = 1035
+    p = SIZES[args.size]
+    config = gpt_config(tr.num_tokens, p.H, p.L, 1024 if kind == 'lanl' else 512)
+    model = GPT(config).to(device)
+    opt = AdamW(model.parameters(), lr=3e-4, betas=(0.9, 0.95), eps=1e-8, weight_decay=0.1)
+    scorer = make_causal_lp_scorer(model, tr, walk_len=args.eval_walk_len, delta=eval_delta)
 
-    if DATASET == 'lanl14attr' or args.lanlcomp or args.argus:
-        WALK_LEN = 8
-        MINI_BS = 256
+    train_log = open(f'{log_dir}/{stem}_log.csv', 'w')
+    train_log.write('updates,tokens,loss,lr,seq_len,walk_len,seconds\n')
+    eval_log = open(f'{log_dir}/{stem}_eval.csv', 'w')
+    eval_log.write('epoch,updates,tokens,te_auc,te_ap,va_auc,va_ap\n')
 
-    if args.argus and args.trw:
-        MINI_BS = 128
+    # Walks interleave F feature tokens per hop: n0 f.. n1 f.. n2 -> tokens = nodes + (nodes - 1) * F
+    feat_dim = tr.edge_attr.size(1) if edge_features else 0
+    tokens = updates = micro = epoch = 0
+    next_snapshot = snapshot_every
+    win_tokens = win_walks = 0  # for average sequence / walk length since the last log line
+    best = -float('inf')
+    start = time.time()
+    timer = SpeedTimer(args.speedtest, device)
+    opt.zero_grad()
 
+    while tokens < total:
+        model.train()
+        timer.mark()
+        for walks in walk_src:  # walk sampling happens inside the iterator
+            if walks.size(0) == 0:
+                timer.mark()
+                continue
+            n_tok = int((walks != PAD).sum())
+            tokens += n_tok
+            win_tokens += n_tok
+            win_walks += walks.size(0)
+            timer.lap('samp')
 
-    tr = torch.load(f'data/{DATASET}_tgraph_tr.pt', weights_only=False)
+            loss = model(walks)
+            timer.lap('fwd')
+            # Sum (don't average) gradients over micro-batches, as in the original code. With clipping
+            # at 5 this matters: averaging produced markedly worse checkpoints for downstream LP.
+            loss.backward()
+            timer.lap('bwd')
 
-    # Training set size ablation study
-    if args.tr_size != 1:
-        if not os.path.exists(f'subsets/{DATASET}.pt'):
-            perturb = torch.randperm(tr.col.size(0))
-            torch.save(perturb, f'subsets/{DATASET}.pt')
-        else:
-            perturb = torch.load(f'subsets/{DATASET}.pt', weights_only=True)
+            micro += 1
+            if micro < accum:
+                timer.mark()
+                continue
+            micro = 0
 
-        perturb = perturb[: int(perturb.size(0) * args.tr_size)]
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 5)
+            lr = lr_at(tokens, total, warmup)
+            for g in opt.param_groups:
+                g['lr'] = lr
+            opt.step()
+            opt.zero_grad()
+            timer.lap('step')
+            updates += 1
 
-        # Need to keep everything in same order, so use mask instead of index
-        to_keep = torch.zeros(tr.col.size(0), dtype=torch.bool)
-        to_keep[perturb] = 1
+            if updates % LOG_EVERY == 0:
+                el = time.time() - start
+                seq_len = win_tokens / max(1, win_walks)
+                walk_len = (seq_len + feat_dim) / (1 + feat_dim)
+                win_tokens = win_walks = 0
+                print(f'[{updates}-{epoch}] loss {loss.item():.4f} lr {lr:.2e} tokens {tokens:.2e} '
+                      f'seq len {seq_len:.1f} (walk len {walk_len:.2f}) {el:.0f}s')
+                train_log.write(f'{updates},{tokens},{loss.item()},{lr},{seq_len},{walk_len},{el}\n')
+                train_log.flush()
 
-        tr.col = tr.col[to_keep]
-        tr.src = tr.src[to_keep]
-        tr.ts = tr.ts[to_keep]
+            if snapshot_every and tokens >= next_snapshot:
+                snap = ckpt.replace('.pt', f'-snap{round(tokens / 1e6)}Mtok.pt')
+                save_checkpoint(model.state_dict(), snap)
+                print(f'snapshot -> {snap}')
+                while next_snapshot <= tokens:
+                    next_snapshot += snapshot_every
 
-        print("Reindexing...")
-        tr.idxptr = reindex(tr.src, tr.x.size(0))
-        print(f"{tr.col.size(0)} edges")
+            if tokens >= total:
+                break
+            timer.mark()
 
-        if 'edge_attr' in tr.keys():
-            tr.edge_attr = tr.edge_attr[to_keep]
+        if args.speedtest:
+            timer.dump(f'latency/latency_{stem}_pt.json', dataset=name, size=args.size, temporal=args.trw,
+                       edge_features=edge_features, walk_len=walk_len, mini_bs=mini_bs,
+                       accum=accum, tokens=tokens, updates=updates, device=str(device))
+            raise SystemExit
 
-    if args.trw:
-        g = TRWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
+        epoch += 1
 
-        va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
-        va = TRWSampler(va, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
-        va.label = torch.zeros_like(va.col)
+        if eval_every and epoch % eval_every == 0:
+            save_checkpoint(model.state_dict(), ckpt)  # latest; saved with each evaluation, not every epoch
+            model.eval()
+            torch.cuda.empty_cache()
+            m = evaluate(scorer, tr, va, te, cfg['eval_bs'], seed=args.seed)
+            print(f'[epoch {epoch}] TEST AUC {m["te_auc"]:.4f} AP {m["te_ap"]:.4f} | '
+                  f'VAL AUC {m["va_auc"]:.4f} AP {m["va_ap"]:.4f}')
+            eval_log.write(f'{epoch},{updates},{tokens},{m["te_auc"]},{m["te_ap"]},{m["va_auc"]},{m["va_ap"]}\n')
+            eval_log.flush()
+            if m['va_auc'] > best:
+                best = m['va_auc']
+                save_checkpoint(model.state_dict(), best_ckpt)
 
-        te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
-        label = te.label
-        te = TRWSampler(te, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
-        te.label = label
-    else:
-        g = RWSampler(tr, device=DEVICE, walk_len=WALK_LEN, batch_size=MINI_BS, edge_features=edge_features)
-
-        va = torch.load(f'data/{DATASET}_tgraph_va.pt', weights_only=False)
-        va = RWSampler(va, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
-        va.label = torch.zeros_like(va.col)
-
-        te = torch.load(f'data/{DATASET}_tgraph_te.pt', weights_only=False)
-        label = te.label
-        te = RWSampler(te, walk_len=WALK_LEN, batch_size=EVAL_BS, edge_features=edge_features)
-        te.label = label
-
-    CHECKPOINT = 1000
-    WORKERS = 1
-    EVAL_BS = 512
-    DOWNSAMPLE = False
-
-    if DATASET.startswith('lanl'):
-        WARMUP_T = 10 ** 8 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 9           #(originally 10**10)
-        DELTA = 60*60*24 # 1 day
-
-        if DATASET == 'lanl':
-            SNAPSHOTS = list(range(59))
-            WORKERS = 2
-        elif args.argus:
-            SNAPSHOTS = tr.ts.unique().tolist()
-
-        else:
-            SNAPSHOTS = list(range(14))
-
-        if SIZE == 'med':
-            EVAL_BS = 128
-            tr.batch_size = MINI_BS
-
-        if DATASET == 'lanl14attr' or DATASET == 'lanl14compressedattr' or args.argus:
-            WORKERS = 16
-            EVAL_EVERY = 14
-
-
-    elif DATASET == 'unsw':
-        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 8           #(originally 10**10)
-        DELTA = 0
-        SNAPSHOTS = tr.ts.unique().tolist()
-        EVAL_EVERY = 10
-        EVAL_BS = 2048
-        WORKERS = 16
-
-        if SIZE == 'tiny':
-            g.n_walks = 20 # Get up to about 1024 samples per update
-        elif SIZE == 'mini':
-            g.n_walks = 10
-
-    elif DATASET == 'optc':
-        WARMUP_T = 10 ** 7 # Tokens (originally 10**9)
-        TOTAL_T = 10 ** 8
-
-        DELTA = 60*60*24 if args.delta == -1 else args.delta
-        SNAPSHOTS = (tr.ts // DELTA).unique(sorted=True).tolist()#[:5]
-        CHECKPOINT = len(SNAPSHOTS)
-        WORKERS = 16
-        EVAL_BS = 2048*2
-        EVAL_EVERY = 50
-
-        if SIZE == 'med':
-            EVAL_BS = 2048
-        #    WORKERS = 1
-        #DOWNSAMPLE = 0.1
-
-    else:
-        print(f"Unrecognized dataset: {DATASET}")
-
-    OUT_F = f'rw_gpt_{DATASET}'
-    if args.trw:
-        OUT_F = 't'+OUT_F
-
-    if args.n_tokens:
-        TOTAL_T = int(args.n_tokens) * 1e8
-        WARMUP_T = TOTAL_T // 10
-
-    print(OUT_F)
-    print("Walk len", WALK_LEN)
-
-    t = RWTokenizer(g.x)
-    t.set_mask_rate(0)
-
-    config = OpenAIGPTConfig(
-        g.num_tokens + GNNEmbedding.OFFSET,
-        hidden_size=         params.H,
-        num_hidden_layers=   params.L,
-        num_attention_heads= params.H // 64,
-        intermediate_size=   params.H * 4,
-        num_nodes = g.num_tokens,
-        max_position_embeddings = 1024 if args.argus else 512
-    )
-
-    evaluator = CausalEvaluator(
-        1,
-        dataset=DATASET, device=DEVICE,
-        delta=DELTA, workers=WORKERS,
-        eval_bs=EVAL_BS, downsample=DOWNSAMPLE
-    )
-    model = GPT(config).to(DEVICE)
-    train(g,model)
+    save_checkpoint(model.state_dict(), ckpt)
+    print(f'Done: {tokens:.2e} tokens, {updates} updates, {time.time() - start:.0f}s -> {ckpt}')

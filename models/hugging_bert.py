@@ -54,6 +54,15 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
 
+    # The MLM head (hidden state -> a score for every token in the vocabulary) is by far the most
+    # expensive layer when the vocabulary is large, and only positions that carry a label need it:
+    # the one [MASK] of a link-prediction input, or the masked tokens of a pretraining walk. With
+    # MASKED_ONLY the head runs at those positions alone. The head works on each position
+    # independently and the loss already ignored every unlabelled position, so the loss, its
+    # gradients and the scores are the same as before up to floating-point rounding
+    # (test_masked_head.py checks this). False restores the original computation.
+    MASKED_ONLY = True
+
     def modified_fwd(self, walks, masks, targets, attn_mask, return_loss=True, skip_cls=True):
         input_ids = walks.to(self.device)
         tgt = torch.full(masks.size(), -100, device=masks.device)
@@ -70,6 +79,14 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
         if isinstance(attn_mask, torch.Tensor):
             attn_mask=attn_mask.to(self.device)
 
+        if return_loss and self.MASKED_ONLY:
+            hidden = self.forward(
+                input_ids, position_ids=pos_ids,
+                return_dict=True, attention_mask=attn_mask, skip_cls=True
+            )
+            labelled = tgt != -100      # same positions, in the same order, as the full loss used
+            return CrossEntropyLoss()(self.cls(hidden[labelled]), tgt[labelled])
+
         out = self.forward(
             input_ids, labels=tgt, position_ids=pos_ids,
             return_dict=True, attention_mask=attn_mask, skip_cls=skip_cls
@@ -79,6 +96,19 @@ class GraphBertForMaskedLM(BertPreTrainedModel):
             return out.loss
         else:
             return out
+
+    def masked_logits(self, walks, masks, attn_mask):
+        '''
+        Vocabulary logits at the masked positions only: [masks.sum(), vocab_size], rows in the
+        order masks selects them. The same values as
+            modified_fwd(walks, masks, None, attn_mask, return_loss=False, skip_cls=False).logits[masks]
+        without scoring every other position against the vocabulary.
+        '''
+        if not self.MASKED_ONLY:
+            return self.modified_fwd(walks, masks, None, attn_mask,
+                                     return_loss=False, skip_cls=False).logits[masks]
+        hidden = self.modified_fwd(walks, masks, None, attn_mask, return_loss=False, skip_cls=True)
+        return self.cls(hidden[masks.to(hidden.device)])
 
     def forward(
         self,

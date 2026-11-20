@@ -127,11 +127,16 @@ def poison_attr_tgraph(tr,te, percent, fname):
     new_ef = te.edge_attr[poison]
     new_ts = te.ts[poison]
 
-    return merge(
+    g = merge(
         tr.idxptr,tr.col,tr.ts,
         new_src,new_col,new_ts,
         ef1=tr.edge_attr, ef2=new_ef
     )
+
+    if 'num_tokens' in tr.keys():
+        g.num_tokens = tr.num_tokens
+
+    return g
 
 def poison_nonattr_tgraph(tr,te, percent, fname):
     is_mal = te.label.nonzero().flatten()
@@ -152,10 +157,15 @@ def poison_nonattr_tgraph(tr,te, percent, fname):
     new_src = te.src[poison]
     new_ts = te.ts[poison]
 
-    return merge(
+    g = merge(
         tr.idxptr,tr.col,tr.ts,
         new_src,new_col,new_ts
     )
+
+    if 'num_tokens' in tr.keys():
+        g.num_tokens = tr.num_tokens
+
+    return g
 
 def poison(tr,te,has_edge_attrs,percent,fname):
     '''
